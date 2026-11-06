@@ -61,6 +61,7 @@ its own:
 - It reuses a window only if the window has exactly the same path. A remote
   file opens in a window of its own, also when the window of its project is
   open. `--add` has no effect on `ssh://` URLs.
+- `zed` gives Zed no window option: Zed selects the window itself.
 
 So `zed README.md` opens `README.md` alone. To work in a project with its tree
 and its language servers, open the project with `zed .` and open its files
@@ -280,8 +281,6 @@ command | zed [OPTIONS] -
 | Option | Description |
 |---|---|
 | `-w` | Wait until you save the file in Zed. Use it for `EDITOR`. |
-| `-n` | Open in a new window. |
-| `-a` | Open in the current window: Zed uses the window of the project if it is open (default). |
 | `-p PORT` | Port of the listener. |
 | `-h HOST` | SSH host name of this server. |
 | `-t TARGET` | Address of the listener. |
@@ -388,8 +387,7 @@ File: `~/.config/zed-remote-open/settings.json` (mode `600`)
   "host": "myserver",
   "port": 7682,
   "target": "127.0.0.1",
-  "token": "<token>",
-  "window": "current"
+  "token": "<token>"
 }
 ```
 
@@ -399,14 +397,12 @@ File: `~/.config/zed-remote-open/settings.json` (mode `600`)
 | `port` | 1 to 65535 (default `7682`) | `ZED_LISTENER_PORT` |
 | `target` | address of the listener (default `127.0.0.1`) | `ZED_LISTENER_HOST` |
 | `token` | the token of the listener | `ZED_LISTENER_TOKEN` |
-| `window` | `current` (default: the window of the project if it is open) or `new` | `ZED_WINDOW` |
 
 Precedence: option > environment variable > settings file > default value.
 
 Examples:
 
 ```bash
-zed -c window:new             # always open a new window
 zed -c port:7700              # save the port
 zed -c target:                # remove the target (use the default)
 ```

@@ -13,7 +13,7 @@ REPO="franciscocabral/zed-remote-open"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zed-remote-open"
 CONFIG_FILE="$CONFIG_DIR/settings.json"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zed-remote-open"
-KEYS=(host port target token window)
+KEYS=(host port target token)
 RESPONSE_TIMEOUT=10
 
 usage() {
@@ -35,9 +35,6 @@ Options:
                  Enter in the terminal continues without a save; Ctrl+C
                  cancels (exit code 1). With Zed autosave, the first
                  autosave ends the wait.
-  -n             Open in a new window.
-  -a             Open in the current window (the window of the project, if it
-                 is open). This is the default.
   -p PORT        Port of the listener.
   -h HOST        SSH host name that the local computer uses for this server.
   -t TARGET      Address of the listener.
@@ -58,7 +55,7 @@ Options:
 
 Precedence: option > environment variable > settings file > default.
 Environment variables: ZED_SSH_HOST, ZED_LISTENER_PORT, ZED_LISTENER_HOST,
-ZED_LISTENER_TOKEN, ZED_WINDOW.
+ZED_LISTENER_TOKEN.
 Settings file: $CONFIG_FILE
 EOF
 }
@@ -77,7 +74,6 @@ default_value() {
         host) hostname -s ;;
         port) echo 7682 ;;
         target) echo 127.0.0.1 ;;
-        window) echo current ;;
         token) echo "" ;;
     esac
 }
@@ -88,7 +84,6 @@ env_value() {
         port) echo "${ZED_LISTENER_PORT-}" ;;
         target) echo "${ZED_LISTENER_HOST-}" ;;
         token) echo "${ZED_LISTENER_TOKEN-}" ;;
-        window) echo "${ZED_WINDOW-}" ;;
     esac
 }
 
@@ -100,7 +95,6 @@ valid_value() {
         port) [[ $value =~ ^[0-9]{1,5}$ ]] && ((10#$value >= 1 && 10#$value <= 65535)) ;;
         target) [[ $value =~ ^[A-Za-z0-9.-]+$ ]] ;;
         token) [[ $value =~ ^[A-Za-z0-9_-]+$ ]] && ((${#value} >= 16 && ${#value} <= 256)) ;;
-        window) [[ $value == current || $value == new ]] ;;
         *) return 1 ;;
     esac
 }
@@ -181,7 +175,6 @@ request() {
         if [[ -n ${cfg[token]} ]]; then echo "token ${cfg[token]}"; fi
         echo "host ${cfg[host]}"
         echo "mode $mode"
-        echo "window ${cfg[window]}"
         for line in "${req_paths[@]+"${req_paths[@]}"}"; do echo "path $line"; done
         for line in "${req_extra[@]+"${req_extra[@]}"}"; do echo "$line"; done
         echo "end"
@@ -431,14 +424,14 @@ _zed_remote_open() {
     local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
     case $prev in
         -c)
-            COMPREPLY=($(compgen -W "host: port: target: token: window:current window:new" -- "$cur"))
+            COMPREPLY=($(compgen -W "host: port: target: token:" -- "$cur"))
             compopt -o nospace 2>/dev/null
             return ;;
         -p | -h | -t | --browse | --notify) return ;;
         --completion) COMPREPLY=($(compgen -W "bash zsh" -- "$cur")); return ;;
     esac
     if [[ $cur == -* ]]; then
-        COMPREPLY=($(compgen -W "-w -n -a -p -h -t -c --browse --notify --doctor --update
+        COMPREPLY=($(compgen -W "-w -p -h -t -c --browse --notify --doctor --update
             --uninstall --completion --help --version" -- "$cur"))
         return
     fi
@@ -453,12 +446,10 @@ EOF
 _zed_remote_open() {
     _arguments -s -S \
         '-w[wait until the file is saved in Zed]' \
-        '-n[open in a new window]' \
-        '-a[open in the current window]' \
         '-p[port of the listener]:port:' \
         '-h[SSH host name of this server]:host:' \
         '-t[address of the listener]:address:' \
-        '*-c[save a setting]:setting:(host\: port\: target\: token\: window\:current window\:new)' \
+        '*-c[save a setting]:setting:(host\: port\: target\: token\:)' \
         '(- *)--browse[open a URL in the local browser]:url:' \
         '(- *)--notify[show a notification on the local computer]:message:' \
         '(- *)--doctor[check the settings and the listener]' \
@@ -603,15 +594,13 @@ declare -A opt=()
 changes=()
 mode=open
 
-while getopts ":p:h:t:c:wna" o; do
+while getopts ":p:h:t:c:w" o; do
     case $o in
         p) opt[port]=$OPTARG ;;
         h) opt[host]=$OPTARG ;;
         t) opt[target]=$OPTARG ;;
         c) changes+=("$OPTARG") ;;
         w) mode="wait" ;;
-        n) opt[window]=new ;;
-        a) opt[window]=current ;;
         :) die "option -$OPTARG needs a value (see zed --help)" ;;
         *) die "unknown option -$OPTARG (see zed --help)" ;;
     esac

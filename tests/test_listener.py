@@ -39,7 +39,6 @@ class ParseRequestTest(unittest.TestCase):
     def test_open_with_positions(self):
         req = self.parse(["zro 2", "host srv", "path 0 0 /a", "path 12 3 /a/b c.txt", ""])
         self.assertEqual(req.mode, "open")
-        self.assertEqual(req.window, "current")
         self.assertEqual(req.paths, [(0, 0, "/a"), (12, 3, "/a/b c.txt")])
 
     def test_ping_needs_no_path(self):
@@ -53,7 +52,6 @@ class ParseRequestTest(unittest.TestCase):
             "unknown line": ["zro 2", "host srv", "option --foo", "path 0 0 /a"],
             "more than one 'host'": ["zro 2", "host srv", "host srv", "path 0 0 /a"],
             "invalid mode": ["zro 2", "host srv", "mode exec", "path 0 0 /a"],
-            "invalid window": ["zro 2", "host srv", "window x", "path 0 0 /a"],
             "no path": ["zro 2", "host srv"],
         }
         for message, lines in cases.items():
@@ -91,18 +89,18 @@ class ParseRequestTest(unittest.TestCase):
 
 class BuildCommandTest(unittest.TestCase):
     def test_urls_and_options(self):
-        req = zl.Request("srv", "wait", "new", None,
+        req = zl.Request("srv", "wait", None,
                          [(0, 0, "/r"), (5, 0, "/r/a b.ts"), (5, 2, "/r/x:1")])
-        # One call for each URL, each with --new; no --wait and no --add (the
-        # Zed CLI cannot wait for ssh:// URLs and ignores --add for them).
+        # One call for each URL, with no option: Zed selects the window itself.
         self.assertEqual(zl.build_commands(config(), req), [
-            ["zed", "--new", "ssh://srv/r"],
-            ["zed", "--new", "ssh://srv/r/a%20b.ts:5"],
-            ["zed", "--new", "ssh://srv/r/x%3A1:5:2"],
+            ["zed", "ssh://srv/r"],
+            ["zed", "ssh://srv/r/a%20b.ts:5"],
+            ["zed", "ssh://srv/r/x%3A1:5:2"],
         ])
 
-    def test_current_window(self):
-        req = zl.Request("srv", "open", "current", None, [(0, 0, "/r")])
+    def test_window_line_is_ignored(self):
+        """zed 1.1.0 sends "window current"; the listener accepts it."""
+        req = zl.parse_request(["zro 2", "host srv", "window new", "path 0 0 /r"], config())
         self.assertEqual(zl.build_commands(config(), req), [["zed", "ssh://srv/r"]])
 
     def test_too_many_paths(self):

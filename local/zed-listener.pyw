@@ -9,7 +9,6 @@ Protocol "zro 2". One TCP connection on 127.0.0.1 = one request:
     token <token>                      only if the listener has a token
     host <ssh host>
     mode open|wait|ping|browse|notify  optional, default open
-    window current|new                 optional, default current
     path <line> <column> <absolute path>    open, wait: one or more (0 = no position)
     url <http or https URL>            browse: the URL to open in the browser
     title <text>                       notify: optional
@@ -102,7 +101,6 @@ class Config:
 class Request:
     host: str
     mode: str = "open"
-    window: str = "current"
     token: str | None = None
     paths: list = field(default_factory=list)  # (line, column, absolute path)
     url: str = ""
@@ -252,7 +250,9 @@ def parse_request(lines: list[str], cfg: Config) -> Request:
             if not m:
                 raise BadRequest(f"invalid path line {line!r}")
             paths.append((int(m[1]), int(m[2]), m[3]))
-        elif key in ("token", "host", "mode", "window", "url", "title", "message"):
+        elif key == "window":
+            continue  # zed 1.1.0 sends it; Zed now selects the window itself.
+        elif key in ("token", "host", "mode", "url", "title", "message"):
             if key in values:
                 raise BadRequest(f"more than one {key!r} line")
             values[key] = value
@@ -266,13 +266,11 @@ def parse_request(lines: list[str], cfg: Config) -> Request:
     host = values.get("host", "")
     if host not in cfg.hosts:
         raise BadRequest(f"host {host!r} is not allowed")
-    req = Request(host, values.get("mode", "open"), values.get("window", "current"), None,
+    req = Request(host, values.get("mode", "open"), None,
                   paths, values.get("url", ""), values.get("title", ""),
                   values.get("message", ""))
     if req.mode not in ("open", "wait", "ping", "browse", "notify"):
         raise BadRequest(f"invalid mode {req.mode!r}: update the listener")
-    if req.window not in ("current", "new"):
-        raise BadRequest(f"invalid window {req.window!r}")
     if req.mode in ("open", "wait"):
         if not paths:
             raise BadRequest("no path")
@@ -299,10 +297,9 @@ def build_commands(cfg: Config, req: Request) -> list[list[str]]:
         url = f"ssh://{req.host}{quote(path)}"
         if line:
             url += f":{line}" + (f":{column}" if column else "")
-        # Zed handles each ssh:// URL as a project of its own: it reuses a
-        # window only if the window has exactly this path, and it ignores
-        # --add (Zed 1.27). "current" adds no option; "new" adds --new.
-        args = [cfg.zed, "--new", url] if req.window == "new" else [cfg.zed, url]
+        # No window option: Zed selects the window itself. It handles each
+        # ssh:// URL as a project of its own and ignores --add (Zed 1.27).
+        args = [cfg.zed, url]
         commands.append(args)
     return commands
 
@@ -371,8 +368,7 @@ def handle_open(conn: socket.socket, cfg: Config, req: Request) -> None:
 
 
 def run_in_sequence(first: "ZedProcess", rest: list[list[str]]) -> None:
-    """Runs the next zed command after the one before it ends, so that the
-    project window exists before its files open."""
+    """Runs the next zed command after the one before it ends."""
     first.wait(ZED_CALL_TIMEOUT)
     for args in rest:
         try:

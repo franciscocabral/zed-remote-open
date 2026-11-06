@@ -105,8 +105,14 @@ class RemoteZedTest(unittest.TestCase):
     def test_file_outside_git(self):
         other = self.home / "notes.txt"
         other.write_text("x")
-        self.zed("-n", str(other))
-        self.assertEqual(self.last_call(), ["--new", f"ssh://testhost{other}"])
+        self.zed(str(other))
+        self.assertEqual(self.last_call(), [f"ssh://testhost{other}"])
+
+    def test_no_window_options(self):
+        """-n and -a are gone: Zed selects the window itself."""
+        for option in ("-n", "-a"):
+            out = self.zed(option, "a.md", check=False)
+            self.assertIn(f"unknown option {option}", out.stderr)
 
     def test_stdin(self):
         out = self.zed("-", stdin="hello\n")
@@ -143,14 +149,6 @@ class RemoteZedTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("cancelled", err)
 
-    def test_window_setting(self):
-        self.zed("-c", "window:new")
-        self.zed("a.md")
-        r = f"ssh://testhost{self.repo}"
-        self.assertEqual(self.new_calls(1), [["--new", f"{r}/a.md"]])
-        self.zed("-a", "a.md")
-        self.assertEqual(self.new_calls(2)[1:], [[f"{r}/a.md"]])
-
     def test_settings_file_is_private(self):
         self.zed("-c", f"token:{TOKEN}", "-c", "port:7700", "-c", "host:testhost")
         settings = self.home / ".config" / "zed-remote-open" / "settings.json"
@@ -164,7 +162,7 @@ class RemoteZedTest(unittest.TestCase):
             (["-h", "evil", "a.md"], "host 'evil' is not allowed"),
             (["a.md"], "invalid token", {"ZED_LISTENER_TOKEN": "wrong-token-123456"}),
             (["-p", "1", "a.md"], "nothing listens on this port of the server"),
-            (["-c", "window:big"], "'big' is not a valid window"),
+            (["-c", "window:new"], "unknown key 'window'"),
             (["-x"], "unknown option -x"),
             (["--nope"], "unknown option --nope"),
             (["missing.md"], "no path to open"),
