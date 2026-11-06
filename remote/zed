@@ -225,7 +225,7 @@ ensure_exists() {
 stdin_file() {
     [[ ! -t 0 ]] || die "'-' reads the text from stdin, but stdin is a terminal"
     mkdir -p -- "$CACHE_DIR"
-    chmod 700 -- "$CACHE_DIR"
+    chmod 700 "$CACHE_DIR"
     find "$CACHE_DIR" -name 'stdin-*' -type f -mtime +7 -delete 2>/dev/null || true
     local file
     file=$(mktemp "$CACHE_DIR/stdin-$(date +%Y%m%d-%H%M%S).XXXXXX")

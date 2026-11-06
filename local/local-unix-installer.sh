@@ -204,7 +204,7 @@ Host${needed}
                 note "Backup: $SSH_CONFIG.bak.*"
             else
                 mkdir -p -- "$HOME/.ssh"
-                chmod 700 -- "$HOME/.ssh"
+                chmod 700 "$HOME/.ssh"
                 (umask 077 && : >"$SSH_CONFIG")
             fi
             cat "$new" >"$SSH_CONFIG" # In place: the permissions stay.
@@ -434,7 +434,7 @@ fi
 # --- 8. Install ---
 
 mkdir -p -- "$DATA_DIR"
-chmod 700 -- "$DATA_DIR"
+chmod 700 "$DATA_DIR"
 if ((replace)); then
     info "Installing listener $new_version in $DATA_DIR"
     cp -- "$new_file" "$LISTENER"
