@@ -8,7 +8,7 @@ Open files and directories of a Linux server in the Zed editor of your local
 computer, from the terminal of the server. It is like `code .` in VS Code
 Remote, for [Zed remote development](https://zed.dev/docs/remote-development).
 
-Current version: <!-- version -->v1.2.0<!-- /version -->
+Current version: <!-- version -->v1.2.1<!-- /version -->
 
 ```bash
 zed .                         # open the current directory as a project
@@ -54,7 +54,7 @@ and then it shows a command for the server.
 **2. On the server**, run the command that the setup shows. For example:
 
 ```bash
-bash <(curl -fsSL https://www.github.com/franciscocabral/zed-remote-open/raw/v1.2.0/remote/remote-linux-installer.sh) -y -h myserver -p 7682 -k <token>
+bash <(curl -fsSL https://www.github.com/franciscocabral/zed-remote-open/raw/v1.2.1/remote/remote-linux-installer.sh) -y -h myserver -p 7682 -k <token>
 ```
 
 **3. Test it** on the server:
@@ -123,14 +123,14 @@ installer as the scripts below.
 **Windows**, in PowerShell:
 
 ```powershell
-curl.exe -fsSL -o local-windows-installer.ps1 https://www.github.com/franciscocabral/zed-remote-open/raw/v1.2.0/local/local-windows-installer.ps1
+curl.exe -fsSL -o local-windows-installer.ps1 https://www.github.com/franciscocabral/zed-remote-open/raw/v1.2.1/local/local-windows-installer.ps1
 powershell -ExecutionPolicy Bypass -File .\local-windows-installer.ps1
 ```
 
 **macOS or Linux**, in a terminal:
 
 ```bash
-bash <(curl -fsSL https://www.github.com/franciscocabral/zed-remote-open/raw/v1.2.0/local/local-unix-installer.sh)
+bash <(curl -fsSL https://www.github.com/franciscocabral/zed-remote-open/raw/v1.2.1/local/local-unix-installer.sh)
 ```
 
 The installer:

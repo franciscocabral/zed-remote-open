@@ -21,8 +21,8 @@
 set -euo pipefail
 
 # The installer installs only the zed of the same version (set by scripts/set-version.sh).
-INSTALLER_VERSION="1.2.0"
-BASE_URL="${ZED_REMOTE_OPEN_URL:-https://github.com/franciscocabral/zed-remote-open/raw/v1.2.0}"
+INSTALLER_VERSION="1.2.1"
+BASE_URL="${ZED_REMOTE_OPEN_URL:-https://github.com/franciscocabral/zed-remote-open/raw/v1.2.1}"
 BIN_DIR="$HOME/.local/bin"
 DEST="$BIN_DIR/zed"
 BROWSE_LINK="$BIN_DIR/zed-browse"

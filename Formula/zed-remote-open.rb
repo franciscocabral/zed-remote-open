@@ -7,15 +7,15 @@ class ZedRemoteOpen < Formula
   desc "Open files of your SSH servers in the local Zed editor (local listener)"
   homepage "https://github.com/franciscocabral/zed-remote-open"
   license "MIT"
-  url "https://github.com/franciscocabral/zed-remote-open/releases/download/v1.2.0/local-unix-installer.sh"
-  version "1.2.0"
-  sha256 "f46ae885c3a807cb0dd42b34d504cd58d20822be9d078ff3f4f4393930622704"
+  url "https://github.com/franciscocabral/zed-remote-open/releases/download/v1.2.1/local-unix-installer.sh"
+  version "1.2.1"
+  sha256 "d6d26414c1b22cdad759c5e3760277eebc3796d3ea920084c7a4aa95039eb201"
 
   depends_on "python@3.13"
 
   resource "listener" do
-    url "https://github.com/franciscocabral/zed-remote-open/releases/download/v1.2.0/zed-listener.pyw"
-    sha256 "d2fa5028eb35a1eb9625a607a304f06d554a3c95b6f55d4168d3d41fd27afd2e"
+    url "https://github.com/franciscocabral/zed-remote-open/releases/download/v1.2.1/zed-listener.pyw"
+    sha256 "a664a0602daccd63b51cc0c54dab53d83d588176d6a2f964f2b7c0750c3aa451"
   end
 
   def install
