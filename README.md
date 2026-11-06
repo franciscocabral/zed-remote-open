@@ -11,7 +11,7 @@ zed README.md             # open the Git root of the file and the file, in one w
 zed src/app.ts:42:5       # open a file at line 42, column 5
 zed a.ts b.ts             # open more than one file
 git diff | zed -          # open the text from stdin
-export EDITOR="zed -w"    # use Zed for git commit, crontab -e, ...
+git config --global core.editor "zed -w"   # use Zed for git commit, rebase -i, ...
 ```
 
 ## How it works
@@ -223,9 +223,14 @@ command | zed [OPTIONS] -
 ### Use Zed as the editor of the server
 
 ```bash
-export EDITOR="zed -w"
+git config --global core.editor "zed -w"   # for Git
+export EDITOR="zed -w"                     # for other programs (crontab -e, ...)
 git commit           # Zed opens COMMIT_EDITMSG; git continues when you save it
 ```
+
+Git uses the first of these that is set: `GIT_EDITOR`, `core.editor`,
+`VISUAL`, `EDITOR`. So `EDITOR` alone has no effect on Git if `core.editor`
+or `GIT_EDITOR` is set. `git var GIT_EDITOR` shows the editor that Git uses.
 
 With `-w`, `zed` sends only the files (not the Git root), and it waits until
 you **save** one of them in Zed:
