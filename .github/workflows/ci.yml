@@ -1,10 +1,15 @@
 name: CI
 
+# No CI run when all the changed files are documentation. If one other file
+# changes, CI runs as normal. A documentation-only push to main makes no
+# release, because "docs:" commits do not change the version.
 on:
   push:
     branches: ["**"]
     tags-ignore: ["**"]
+    paths-ignore: ["**.md", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "LICENSE"]
 
 permissions:
   contents: read

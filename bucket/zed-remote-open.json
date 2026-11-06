@@ -2,7 +2,7 @@
     "version": "1.2.0",
     "description": "Open files of your SSH servers in the local Zed editor (local listener). Run 'zed-remote-open-setup' after the installation.",
     "homepage": "https://github.com/franciscocabral/zed-remote-open",
-    "license": "Unknown",
+    "license": "MIT",
     "notes": [
         "Run 'zed-remote-open-setup' to install and start the listener, and to set up SSH.",
         "It needs Python 3.10 or later with pythonw.exe (https://www.python.org/downloads/windows/)."

@@ -553,16 +553,24 @@ run_update() {
 }
 
 run_uninstall() {
-    local self answer
+    local self answer link
     self=$(realpath -- "${BASH_SOURCE[0]}")
+    link="$(dirname -- "$self")/zed-browse"
     [[ -t 0 ]] || die "--uninstall asks for a confirmation: run it in a terminal"
     echo "This removes:"
     echo "  $self (and its .bak copies)"
+    # The zed-browse link of the installer, only if it points to this zed.
+    if [[ -L $link && $(realpath -- "$link" 2>/dev/null) == "$self" ]]; then
+        echo "  $link"
+    else
+        link=""
+    fi
     echo "  $CONFIG_DIR"
     echo "  $CACHE_DIR"
     read -r -p "Continue? [y/N] " answer || answer=""
     [[ $answer == [yY]* ]] || exit 1
     rm -rf -- "$CONFIG_DIR" "$CACHE_DIR"
+    if [[ -n $link ]]; then rm -f -- "$link"; fi
     rm -f -- "$self".bak.* "$self"
     echo "Removed. The listener on the local computer stays installed."
 }
