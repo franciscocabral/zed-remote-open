@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from helpers import TOKEN, ZED_SCRIPT, FakeZed, RunningListener, load_listener
@@ -215,7 +216,7 @@ class WaitCloseTest(unittest.TestCase):
         db_dir = tempfile.TemporaryDirectory()
         self.addCleanup(db_dir.cleanup)
         db = Path(db_dir.name) / "db.sqlite"
-        with sqlite3.connect(db) as con:
+        with closing(sqlite3.connect(db)) as con, con:
             con.execute("CREATE TABLE editors (item_id INTEGER, path BLOB)")
         listener = RunningListener(extra={"wait_close": True, "zed_db": str(db)})
         self.addCleanup(listener.close)
@@ -230,11 +231,11 @@ class WaitCloseTest(unittest.TestCase):
                                 stderr=subprocess.PIPE, text=True, start_new_session=True)
         self.addCleanup(proc.kill)
         listener.zed.read(1)
-        with sqlite3.connect(db) as con:  # Zed opens the tab.
+        with closing(sqlite3.connect(db)) as con, con:  # Zed opens the tab.
             con.execute("INSERT INTO editors VALUES (1, ?)", (str(target),))
         time.sleep(1.5)
         self.assertIsNone(proc.poll(), "zed -w returned before the tab closed")
-        with sqlite3.connect(db) as con:  # The user closes the tab, with no save.
+        with closing(sqlite3.connect(db)) as con, con:  # The user closes the tab, with no save.
             con.execute("DELETE FROM editors")
         out, err = proc.communicate(timeout=15)
         self.assertEqual(proc.returncode, 0, err)

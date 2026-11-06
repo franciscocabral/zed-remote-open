@@ -48,6 +48,7 @@ import tempfile
 import threading
 import time
 import webbrowser
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote, urlsplit
@@ -438,7 +439,8 @@ class ZedTabs:
 
     def count(self, paths: list[str]) -> int | None:
         try:
-            with sqlite3.connect(self.uri, uri=True, timeout=2) as con:
+            # closing(): "with sqlite3.connect()" alone does not close the connection.
+            with closing(sqlite3.connect(self.uri, uri=True, timeout=2)) as con:
                 if self.columns is None:
                     tables = [t for (t,) in con.execute(
                         "SELECT name FROM sqlite_master WHERE type = 'table'")]

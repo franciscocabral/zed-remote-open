@@ -93,7 +93,8 @@ class RunningListener:
     """Starts the listener in a subprocess with a temporary configuration."""
 
     def __init__(self, hosts=("testhost",), token=None, extra=None):
-        self.tmp = tempfile.TemporaryDirectory()
+        # Windows: a file that a process still uses cannot be deleted at once.
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.dir = Path(self.tmp.name)
         self.zed = FakeZed(self.dir)
         self.port = free_port()

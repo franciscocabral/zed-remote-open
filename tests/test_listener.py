@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from helpers import TOKEN, FakeZed, RunningListener, load_listener, request, send
@@ -168,7 +169,7 @@ class ListenerFeaturesTest(unittest.TestCase):
             cls.notifier = FakeZed(listener.dir, "notifier")
             cls.ssh = FakeZed(listener.dir, "ssh")
             cls.db = listener.dir / "zed-db.sqlite"
-            with sqlite3.connect(cls.db) as con:
+            with closing(sqlite3.connect(cls.db)) as con, con:
                 con.execute("CREATE TABLE editors (item_id INTEGER, path BLOB)")
             return {"browser_command": str(cls.browser.path),
                     "notify_command": str(cls.notifier.path),
@@ -195,11 +196,11 @@ class ListenerFeaturesTest(unittest.TestCase):
         """The tab of the file opens (a row in the database), then closes."""
         def edit(_sock):
             time.sleep(1)
-            with sqlite3.connect(self.db) as con:
+            with closing(sqlite3.connect(self.db)) as con, con:
                 con.execute("INSERT INTO editors VALUES (1, CAST(? AS BLOB))",
                             ("/srv/repo/COMMIT_EDITMSG",))
             time.sleep(1.5)
-            with sqlite3.connect(self.db) as con:
+            with closing(sqlite3.connect(self.db)) as con, con:
                 con.execute("DELETE FROM editors")
 
         started = time.monotonic()
