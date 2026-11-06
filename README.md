@@ -321,10 +321,13 @@ with `-WaitClose` (Windows) or `-W` (macOS, Linux). The listener then reads
 the database of Zed on the local computer and tells `zed -w` when the tab of
 the file closes. The save still ends the wait too.
 
-- It reads only (`mode=ro`), and it searches all the "path" columns, because
-  the tables of this database are internal to Zed.
-- A Zed update can change the database. If the file does not appear in the
-  database in 20 seconds, `zed -w` tells you, and it waits for the save.
+- It reads only (`mode=ro`). It finds the open tabs in the `items` table,
+  joined with the path of the file in the `editors` table (tested with Zed
+  1.27). An `editors` row stays after its tab closes, so only the join shows
+  the open tabs.
+- The database is internal to Zed, and a Zed update can change it. If the
+  tables are not there, or the file does not appear in 20 seconds, `zed -w`
+  tells you, and it waits for the save.
 
 > If Zed autosave is on (`"autosave": "after_delay"` or `"on_focus_change"`),
 > the first autosave ends the wait.

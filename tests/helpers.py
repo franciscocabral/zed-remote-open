@@ -4,10 +4,12 @@ import importlib.machinery
 import importlib.util
 import json
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -126,3 +128,25 @@ class RunningListener:
         self.proc.kill()
         self.proc.wait()
         self.tmp.cleanup()
+
+
+ZED_SCHEMA = """
+CREATE TABLE items (item_id INTEGER, workspace_id INTEGER, pane_id INTEGER, kind TEXT,
+                    position INTEGER, active INTEGER, preview INTEGER);
+CREATE TABLE editors (item_id INTEGER, workspace_id INTEGER, path BLOB, buffer_path BLOB,
+                      contents TEXT);
+"""
+
+
+def zed_open_tab(db: Path, path: str) -> None:
+    """As Zed: an editors row (it stays after the close) and an items row (the tab)."""
+    with closing(sqlite3.connect(db)) as con, con:
+        con.execute("INSERT INTO editors VALUES (1, 1, CAST(? AS BLOB), CAST(? AS BLOB), '')",
+                    (path, path))
+        con.execute("INSERT INTO items VALUES (1, 1, 1, 'Editor', 0, 1, 0)")
+
+
+def zed_close_tab(db: Path) -> None:
+    """As Zed: the items row goes away; the editors row stays."""
+    with closing(sqlite3.connect(db)) as con, con:
+        con.execute("DELETE FROM items")

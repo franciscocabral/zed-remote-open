@@ -14,7 +14,16 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from helpers import TOKEN, ZED_SCRIPT, FakeZed, RunningListener, load_listener
+from helpers import (
+    TOKEN,
+    ZED_SCHEMA,
+    ZED_SCRIPT,
+    FakeZed,
+    RunningListener,
+    load_listener,
+    zed_close_tab,
+    zed_open_tab,
+)
 
 
 def bash_ok() -> bool:
@@ -217,7 +226,7 @@ class WaitCloseTest(unittest.TestCase):
         self.addCleanup(db_dir.cleanup)
         db = Path(db_dir.name) / "db.sqlite"
         with closing(sqlite3.connect(db)) as con, con:
-            con.execute("CREATE TABLE editors (item_id INTEGER, path BLOB)")
+            con.executescript(ZED_SCHEMA)
         listener = RunningListener(extra={"wait_close": True, "zed_db": str(db)})
         self.addCleanup(listener.close)
         home = Path(db_dir.name) / "home"
@@ -231,12 +240,10 @@ class WaitCloseTest(unittest.TestCase):
                                 stderr=subprocess.PIPE, text=True, start_new_session=True)
         self.addCleanup(proc.kill)
         listener.zed.read(1)
-        with closing(sqlite3.connect(db)) as con, con:  # Zed opens the tab.
-            con.execute("INSERT INTO editors VALUES (1, ?)", (str(target),))
+        zed_open_tab(db, str(target))  # Zed opens the tab.
         time.sleep(1.5)
         self.assertIsNone(proc.poll(), "zed -w returned before the tab closed")
-        with closing(sqlite3.connect(db)) as con, con:  # The user closes the tab, with no save.
-            con.execute("DELETE FROM editors")
+        zed_close_tab(db)  # The user closes the tab, with no save.
         out, err = proc.communicate(timeout=15)
         self.assertEqual(proc.returncode, 0, err)
         self.assertIn("Close the tab or save the file", out)

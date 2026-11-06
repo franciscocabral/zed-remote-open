@@ -427,37 +427,39 @@ class ZedProcess:
 
 
 class ZedTabs:
-    """Experimental: finds the open tabs of a file in the Zed database.
+    """Experimental: counts the open tabs of files in the Zed database.
 
-    The tables of this database are internal to Zed and can change. So the
-    search is general: it counts the rows of each "path" column that contain
-    the path of the file."""
+    The database is internal to Zed and can change. In Zed 1.27, the "items"
+    table has the open tabs, and the "editors" table has the path of each
+    editor. An "editors" row stays after its tab closes (Zed deletes it
+    later), so only the join shows the open tabs. If the tables or columns
+    are not there, count() returns None and the client waits for a save."""
+
+    QUERY = """
+        SELECT COUNT(*) FROM items AS i
+        JOIN editors AS e ON e.item_id = i.item_id AND e.workspace_id = i.workspace_id
+        WHERE CAST(e.path AS TEXT) = ? OR CAST(e.buffer_path AS TEXT) = ?"""
+    NEEDED = {"items": {"item_id", "workspace_id"},
+              "editors": {"item_id", "workspace_id", "path", "buffer_path"}}
 
     def __init__(self, db: Path):
         self.uri = f"{db.resolve().as_uri()}?mode=ro"
-        self.columns: list[tuple[str, str]] | None = None
+        self.checked = False
 
     def count(self, paths: list[str]) -> int | None:
         try:
             # closing(): "with sqlite3.connect()" alone does not close the connection.
             with closing(sqlite3.connect(self.uri, uri=True, timeout=2)) as con:
-                if self.columns is None:
-                    tables = [t for (t,) in con.execute(
-                        "SELECT name FROM sqlite_master WHERE type = 'table'")]
-                    self.columns = [
-                        (table, col)
-                        for table in tables
-                        for (_, col, *_rest) in con.execute(f'PRAGMA table_info("{table}")')
-                        if "path" in col.lower()
-                    ]
-                total = 0
-                for table, col in self.columns:
-                    for path in paths:
-                        total += con.execute(
-                            f'SELECT COUNT(*) FROM "{table}" '
-                            f'WHERE instr(CAST("{col}" AS TEXT), ?) > 0', (path,)
-                        ).fetchone()[0]
-                return total
+                if not self.checked:
+                    for table, columns in self.NEEDED.items():
+                        found = {row[1] for row in con.execute(f'PRAGMA table_info("{table}")')}
+                        if not columns <= found:
+                            logging.warning("The Zed database has no table %s with the columns "
+                                            "%s: this Zed version is not supported",
+                                            table, sorted(columns))
+                            return None
+                    self.checked = True
+                return sum(con.execute(self.QUERY, (path, path)).fetchone()[0] for path in paths)
         except sqlite3.Error as e:
             logging.warning("Cannot read the Zed database: %s", e)
             return None
