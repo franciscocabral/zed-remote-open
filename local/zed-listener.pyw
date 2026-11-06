@@ -28,6 +28,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -236,26 +237,46 @@ def handle(conn: socket.socket, cfg: Config) -> None:
 
     args = build_command(cfg, req)
     logging.info("Running %s", " ".join(args))
+    # The output goes to a temporary file, not to a pipe: the Zed application
+    # that the CLI starts can keep a pipe open, and the listener would wait.
+    output = tempfile.TemporaryFile()
     try:
         proc = subprocess.Popen(
             args,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.STDOUT,
             creationflags=NO_WINDOW,
         )
     except OSError as e:
+        output.close()
         logging.error("Cannot run %s: %s", cfg.zed, e)
         send(conn, f"ERR cannot run zed: {e}")
         return
     send(conn, f"OK {__version__}")
     if req.mode == "wait":
         conn.settimeout(None)
-        code = proc.wait()
-        logging.info("Zed closed the files (exit code %d)", code)
+        code = wait_for_zed(proc, output)
         send(conn, f"DONE {code}")
     else:
-        threading.Thread(target=proc.wait, daemon=True).start()  # No zombie process.
+        threading.Thread(target=wait_for_zed, args=(proc, output), daemon=True).start()
+
+
+def wait_for_zed(proc: subprocess.Popen, output) -> int:
+    """Waits for the zed command and writes its exit code and output to the log."""
+    code = proc.wait()
+    try:
+        output.seek(0)
+        text = output.read(4000).decode("utf-8", errors="replace").strip()
+    except OSError:
+        text = ""
+    finally:
+        output.close()
+    if code:
+        logging.warning("zed exit code %d. Output: %s", code, text or "(none)")
+    else:
+        logging.info("zed exit code 0%s", f". Output: {text}" if text else "")
+    return code
 
 
 def close_gracefully(conn: socket.socket) -> None:
