@@ -10,12 +10,14 @@
 #   -k TOKEN    Use this token.        -K  Use no token.
 #   -P PYTHON   Python 3.10 or later to run the listener.
 #   -y          Ask no questions: answer yes and use the default values.
-#   -f          Replace a newer version.
+#   -f          Replace a newer version, or install a listener of a different version.
 #   -A          Do not start the listener at login.
 #   -S          Do not change ~/.ssh/config.
 #   -u          Uninstall.
 set -euo pipefail
 
+# The installer installs only the listener of the same version (set by scripts/set-version.sh).
+INSTALLER_VERSION="1.1.0"
 BASE_URL="${ZED_REMOTE_OPEN_URL:-https://github.com/franciscocabral/zed-remote-open/raw/main}"
 DEFAULT_PORT=7682
 LABEL="io.github.franciscocabral.zed-remote-open"
@@ -338,6 +340,11 @@ else
 fi
 new_version=$(listener_version "$new_file")
 [[ -n $new_version && $new_version != unknown ]] || die "the new listener file is not correct (no version)"
+if [[ $new_version != "$INSTALLER_VERSION" ]] && ((!force)); then
+    die "this installer is version $INSTALLER_VERSION, but the listener is $new_version.
+       Use the installer and the listener of the same version: set ZED_REMOTE_OPEN_URL to
+       https://github.com/franciscocabral/zed-remote-open/raw/v$INSTALLER_VERSION (or use -f)."
+fi
 note "New version: $new_version"
 
 replace=1

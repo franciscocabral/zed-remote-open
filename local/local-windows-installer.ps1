@@ -40,6 +40,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# The installer installs only the listener of the same version (set by scripts/set-version.sh).
+$InstallerVersion = '1.1.0'
 $MinPython = [version]'3.10'
 $DefaultPort = 7682
 $InstallDir = Join-Path $env:LOCALAPPDATA 'zed-remote-open'
@@ -376,6 +378,12 @@ $newVersion = Get-ListenerVersion $newFile
 if (-not $newVersion -or $newVersion -eq 'unknown') {
     Remove-Item $newFile -ErrorAction SilentlyContinue
     Stop-WithError 'The new listener file is not correct (no version).'
+}
+if ($newVersion -ne $InstallerVersion -and -not $Force) {
+    Remove-Item $newFile -ErrorAction SilentlyContinue
+    Stop-WithError ("This installer is version $InstallerVersion, but the listener is $newVersion.`n" +
+        "    Use the installer and the listener of the same version: -BaseUrl " +
+        "https://github.com/franciscocabral/zed-remote-open/raw/v$InstallerVersion (or use -Force).")
 }
 Write-Note "New version: $newVersion"
 

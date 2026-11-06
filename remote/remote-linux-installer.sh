@@ -9,7 +9,8 @@
 #   -t TARGET  Address of the listener (default 127.0.0.1).
 #   -k TOKEN   Token of the listener. Without -k, the current token stays.
 #   -y         Ask no questions: use the given, current or default values.
-#   -f         Replace a newer version or a zed command of a different program.
+#   -f         Replace a newer version or a zed command of a different program,
+#              or install a zed of a different version than the installer.
 #   -u         Uninstall.
 #
 # The local installer shows this command with the correct options.
@@ -19,6 +20,8 @@
 # zed command that is not from zed-remote-open.
 set -euo pipefail
 
+# The installer installs only the zed of the same version (set by scripts/set-version.sh).
+INSTALLER_VERSION="1.1.0"
 BASE_URL="${ZED_REMOTE_OPEN_URL:-https://github.com/franciscocabral/zed-remote-open/raw/main}"
 BIN_DIR="$HOME/.local/bin"
 DEST="$BIN_DIR/zed"
@@ -43,7 +46,8 @@ Usage: remote-linux-installer.sh [-h HOST] [-p PORT] [-t TARGET] [-k TOKEN] [-y]
   -t TARGET  Address of the listener (default 127.0.0.1).
   -k TOKEN   Token of the listener. Without -k, the current token stays.
   -y         Ask no questions: use the given, current or default values.
-  -f         Replace a newer version or a zed command of a different program.
+  -f         Replace a newer version or a zed command of a different program,
+             or install a zed of a different version than the installer.
   -u         Uninstall.
 EOF2
 }
@@ -151,6 +155,11 @@ grep -q '^# zed-remote-open:' "$tmp" || die "the zed script is not correct (no z
 
 new_version=$(version_of "$tmp")
 [[ $new_version != none && $new_version != unknown ]] || die "the zed script has no version"
+if [[ $new_version != "$INSTALLER_VERSION" ]] && ((!force)); then
+    die "this installer is version $INSTALLER_VERSION, but the zed script is $new_version.
+       Use the installer and zed of the same version: set ZED_REMOTE_OPEN_URL to
+       https://github.com/franciscocabral/zed-remote-open/raw/v$INSTALLER_VERSION (or use -f)."
+fi
 info "New version: $new_version"
 
 # --- Installed versions ---
