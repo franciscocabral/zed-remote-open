@@ -45,12 +45,12 @@ param(
     [ValidateSet('managed', 'config')]
     [string]$Tunnel,
     [switch]$WaitClose,
-    [string]$BaseUrl = 'https://github.com/franciscocabral/zed-remote-open/raw/v1.1.0'
+    [string]$BaseUrl = 'https://github.com/franciscocabral/zed-remote-open/raw/v1.2.0'
 )
 
 $ErrorActionPreference = 'Stop'
 # The installer installs only the listener of the same version (set by scripts/set-version.sh).
-$InstallerVersion = '1.1.0'
+$InstallerVersion = '1.2.0'
 $MinPython = [version]'3.10'
 $DefaultPort = 7682
 $InstallDir = Join-Path $env:LOCALAPPDATA 'zed-remote-open'

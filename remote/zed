@@ -8,7 +8,7 @@
 # Protocol "zro 2": see local/zed-listener.pyw.
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 REPO="franciscocabral/zed-remote-open"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zed-remote-open"
 CONFIG_FILE="$CONFIG_DIR/settings.json"

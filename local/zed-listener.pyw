@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 PROTOCOL = "zro 2"
 DEFAULT_PORT = 7682
