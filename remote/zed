@@ -2,9 +2,8 @@
 # zed-remote-open: opens files and directories of this server in the Zed
 # editor of your local computer.
 #
-# For a file in a Git repository, it also sends the repository root, so Zed
-# opens the project and the file in one window. If a path does not exist, it
-# asks before it creates it.
+# Zed opens each remote path in a window of its own: a directory as a project,
+# a file alone. If a path does not exist, it asks before it creates it.
 #
 # Protocol "zro 2": see local/zed-listener.pyw.
 set -euo pipefail
@@ -25,8 +24,9 @@ Usage: zed [OPTIONS] [PATH[:LINE[:COLUMN]]...]
        zed --notify [MESSAGE]    (no MESSAGE: the text from stdin)
 
 Opens each PATH of this server in the Zed editor of your local computer.
-With no PATH, it opens the current directory. For a file in a Git
-repository, it also opens the repository root. "-" opens the text from stdin.
+With no PATH, it opens the current directory as a project. Zed opens a file
+in a window of its own: to work in a project, open it with "zed ." and open
+its files with Ctrl+P in Zed. "-" opens the text from stdin.
 
 Options:
   -w             Wait until you save the file in Zed, or close its tab (with the
@@ -241,16 +241,6 @@ ensure_exists() {
     fi
 }
 
-# Prints the root of the Git work tree of a directory, or nothing. In .git/
-# (for example COMMIT_EDITMSG of "git commit"), it is the directory above .git.
-git_root() {
-    local dir=$1
-    if [[ $dir == */.git || $dir == */.git/* ]]; then
-        dir=${dir%%/.git*}
-    fi
-    git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true
-}
-
 # Saves stdin in a file of the cache directory and prints its path.
 stdin_file() {
     [[ ! -t 0 ]] || die "'-' reads the text from stdin, but stdin is a terminal"
@@ -277,7 +267,7 @@ split_position() {
 # --- Actions ---
 
 run_open() {
-    local mode=$1 arg path root used_stdin=0
+    local mode=$1 arg path used_stdin=0
     (($# > 1)) || set -- "$1" .
     shift
 
@@ -297,12 +287,6 @@ run_open() {
         fi
         ensure_exists "$p_path" "$path" || continue
 
-        # The Git root first, also in wait mode: then the file opens in the
-        # window of the project, not in a window of its own.
-        if [[ ! -d $path ]]; then
-            root=$(git_root "$(dirname -- "$path")")
-            [[ -n $root ]] && add_path 0 0 "$root"
-        fi
         add_path "$p_line" "$p_col" "$path"
     done
 
@@ -352,7 +336,7 @@ wait_for_save() {
     local -a files=() before=()
     for entry in "${req_paths[@]}"; do
         path=${entry#* * }
-        [[ ! -d $path ]] || continue # The Git root: only the files end the wait.
+        [[ ! -d $path ]] || continue # Only files end the wait.
         files+=("$path")
         before+=("$(file_signature "$path")")
     done
@@ -524,12 +508,6 @@ run_doctor() {
         echo "  [ok]   'zed' in PATH is this script"
     else
         echo "  [warn] 'zed' in PATH is '${found:-nothing}', not $self"
-    fi
-
-    if command -v git >/dev/null; then
-        echo "  [ok]   git is installed"
-    else
-        echo "  [warn] git is not installed: zed cannot open the Git root of a file"
     fi
 
     request ping

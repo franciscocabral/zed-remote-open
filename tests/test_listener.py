@@ -93,12 +93,12 @@ class BuildCommandTest(unittest.TestCase):
     def test_urls_and_options(self):
         req = zl.Request("srv", "wait", "new", None,
                          [(0, 0, "/r"), (5, 0, "/r/a b.ts"), (5, 2, "/r/x:1")])
-        # One call for each URL: --new only on the first call, --add on the
-        # next calls; no --wait (the Zed CLI cannot wait for ssh:// URLs).
+        # One call for each URL, each with --new; no --wait and no --add (the
+        # Zed CLI cannot wait for ssh:// URLs and ignores --add for them).
         self.assertEqual(zl.build_commands(config(), req), [
             ["zed", "--new", "ssh://srv/r"],
-            ["zed", "--add", "ssh://srv/r/a%20b.ts:5"],
-            ["zed", "--add", "ssh://srv/r/x%3A1:5:2"],
+            ["zed", "--new", "ssh://srv/r/a%20b.ts:5"],
+            ["zed", "--new", "ssh://srv/r/x%3A1:5:2"],
         ])
 
     def test_current_window(self):

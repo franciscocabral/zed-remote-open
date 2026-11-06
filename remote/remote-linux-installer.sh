@@ -136,8 +136,6 @@ fi
 for cmd in realpath dirname hostname mktemp sort sed grep sha256sum; do
     command -v "$cmd" >/dev/null || die "the '$cmd' command is necessary"
 done
-command -v git >/dev/null ||
-    warn "git is not installed. zed will not open the Git root of a file."
 
 # --- Checksums ---
 

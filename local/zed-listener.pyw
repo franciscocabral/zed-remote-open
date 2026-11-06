@@ -21,7 +21,9 @@ For mode "wait", it then sends "WAIT close" (it reports when the tabs close,
 then sends "DONE 0") or "WAIT save" (the client waits for a save).
 
 The Zed CLI opens only one ssh:// URL in each call, so the listener runs zed
-one time for each path, in sequence (the project before its files).
+one time for each path, in sequence. Each remote file or directory opens in
+a window of its own (Zed cannot add a remote file to an open remote project
+from the command line).
 
 With "tunnel_hosts" in the configuration, the listener also keeps an SSH
 connection to each of these hosts with the reverse forward of its port, and
@@ -293,22 +295,14 @@ def build_commands(cfg: Config, req: Request) -> list[list[str]]:
     ssh:// URL in each call: with two, it stops with "cannot open both local
     and ssh paths". The user cannot add other options."""
     commands = []
-    for i, (line, column, path) in enumerate(req.paths):
+    for line, column, path in req.paths:
         url = f"ssh://{req.host}{quote(path)}"
         if line:
             url += f":{line}" + (f":{column}" if column else "")
-        args = [cfg.zed]
-        # The first call opens the project (the Git root): with "new", in a
-        # new window; with "current", Zed uses the window of the project if it
-        # is open. The next calls (the files) use --add: with no option, Zed
-        # opens a single file in a window of its own; --add puts it in the
-        # active window, which is the window of the first call.
-        if i == 0:
-            if req.window == "new":
-                args.append("--new")
-        else:
-            args.append("--add")
-        args.append(url)
+        # Zed handles each ssh:// URL as a project of its own: it reuses a
+        # window only if the window has exactly this path, and it ignores
+        # --add (Zed 1.27). "current" adds no option; "new" adds --new.
+        args = [cfg.zed, "--new", url] if req.window == "new" else [cfg.zed, url]
         commands.append(args)
     return commands
 

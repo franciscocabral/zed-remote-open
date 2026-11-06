@@ -6,8 +6,8 @@ computer, from the server terminal. It is like `code .` in VS Code Remote.
 Current version: <!-- version -->v1.1.0<!-- /version -->
 
 ```bash
-zed .                     # open the current directory
-zed README.md             # open the Git root of the file and the file, in one window
+zed .                     # open the current directory as a project
+zed README.md             # open a file
 zed src/app.ts:42:5       # open a file at line 42, column 5
 zed a.ts b.ts             # open more than one file
 git diff | zed -          # open the text from stdin
@@ -48,12 +48,24 @@ Terms in this document:
   `zed: install cli` on macOS and Linux). Python 3.10 or later
   (on Windows, with `pythonw.exe` from [python.org](https://www.python.org/downloads/windows/)).
   OpenSSH client.
-- **Server:** Linux, Bash 4 or later, `curl`, and `git` (optional, to find
-  the Git root of a file).
+- **Server:** Linux, Bash 4 or later, and `curl`.
 - Zed must connect to the server with remote development (`zed ssh://<host>/`).
-- The Zed CLI opens only one `ssh://` URL in each call. The listener runs `zed`
-  one time for each path, in sequence: first the Git root, then the files with
-  `--add` (with no option, Zed opens a single file in a window of its own).
+
+### Windows of Zed
+
+The Zed CLI (tested with Zed 1.27) handles each `ssh://` URL as a project of
+its own:
+
+- It opens only one `ssh://` URL in each call, so the listener runs `zed` one
+  time for each path.
+- It reuses a window only if the window has exactly the same path. A remote
+  file opens in a window of its own, also when the window of its project is
+  open. `--add` has no effect on `ssh://` URLs.
+
+So `zed README.md` opens `README.md` alone. To work in a project with its tree
+and its language servers, open the project with `zed .` and open its files
+with Ctrl+P in Zed. A native `zed` command for remote terminals is a request
+to Zed ([discussion #32214](https://github.com/zed-industries/zed/discussions/32214)).
 
 ## Installation
 
@@ -282,9 +294,8 @@ command | zed [OPTIONS] -
 | `--uninstall` | Remove `zed` and its settings from the server. |
 | `--help`, `--version` | Show the help or the version. |
 
-- With no path, `zed` opens the current directory.
-- For a file in a Git repository, `zed` also opens the repository root. Zed
-  then shows the project tree and starts the language servers for the project.
+- With no path, `zed` opens the current directory as a project.
+- A file opens in a window of its own (see [Windows of Zed](#windows-of-zed)).
 - `PATH:LINE` and `PATH:LINE:COLUMN` open the file at that position. A file
   that exists with this name is never split.
 - If a path does not exist, `zed` asks before it creates it. A path that ends
@@ -304,10 +315,7 @@ Git uses the first of these that is set: `GIT_EDITOR`, `core.editor`,
 `VISUAL`, `EDITOR`. So `EDITOR` alone has no effect on Git if `core.editor`
 or `GIT_EDITOR` is set. `git var GIT_EDITOR` shows the editor that Git uses.
 
-With `-w`, `zed` also sends the Git root, so the file opens in the window of
-the project. For a file in `.git/` (for example `COMMIT_EDITMSG`), the root is
-the directory above `.git`. Then `zed -w` waits until you **save** one of the
-files in Zed:
+With `-w`, `zed` waits until you **save** one of the files in Zed:
 
 | Action | Result |
 |---|---|
