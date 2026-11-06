@@ -6,6 +6,7 @@
 class ZedRemoteOpen < Formula
   desc "Open files of your SSH servers in the local Zed editor (local listener)"
   homepage "https://github.com/franciscocabral/zed-remote-open"
+  license "MIT"
   url "https://github.com/franciscocabral/zed-remote-open/releases/download/v1.2.0/local-unix-installer.sh"
   version "1.2.0"
   sha256 "f46ae885c3a807cb0dd42b34d504cd58d20822be9d078ff3f4f4393930622704"
