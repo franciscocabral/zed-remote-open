@@ -18,7 +18,7 @@ set -euo pipefail
 
 # The installer installs only the listener of the same version (set by scripts/set-version.sh).
 INSTALLER_VERSION="1.1.0"
-BASE_URL="${ZED_REMOTE_OPEN_URL:-https://github.com/franciscocabral/zed-remote-open/raw/main}"
+BASE_URL="${ZED_REMOTE_OPEN_URL:-https://github.com/franciscocabral/zed-remote-open/raw/v1.1.0}"
 DEFAULT_PORT=7682
 LABEL="io.github.franciscocabral.zed-remote-open"
 SSH_CONFIG="$HOME/.ssh/config"

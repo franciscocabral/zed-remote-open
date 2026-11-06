@@ -36,7 +36,7 @@ param(
     [switch]$NoAutostart,
     [switch]$Yes,
     [switch]$Uninstall,
-    [string]$BaseUrl = 'https://github.com/franciscocabral/zed-remote-open/raw/main'
+    [string]$BaseUrl = 'https://github.com/franciscocabral/zed-remote-open/raw/v1.1.0'
 )
 
 $ErrorActionPreference = 'Stop'

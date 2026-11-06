@@ -63,14 +63,14 @@ version. To install the latest release, use the URLs in
 **Windows**, in PowerShell:
 
 ```powershell
-curl.exe -fsSL -o local-windows-installer.ps1 https://www.github.com/franciscocabral/zed-remote-open/raw/main/local/local-windows-installer.ps1
+curl.exe -fsSL -o local-windows-installer.ps1 https://www.github.com/franciscocabral/zed-remote-open/raw/v1.1.0/local/local-windows-installer.ps1
 powershell -ExecutionPolicy Bypass -File .\local-windows-installer.ps1
 ```
 
 **macOS or Linux**, in a terminal:
 
 ```bash
-bash <(curl -fsSL https://www.github.com/franciscocabral/zed-remote-open/raw/main/local/local-unix-installer.sh)
+bash <(curl -fsSL https://www.github.com/franciscocabral/zed-remote-open/raw/v1.1.0/local/local-unix-installer.sh)
 ```
 
 The installer:
@@ -154,7 +154,7 @@ In an SSH session to the server, run the command that the local installer
 shows. For example:
 
 ```bash
-bash <(curl -fsSL https://www.github.com/franciscocabral/zed-remote-open/raw/main/remote/remote-linux-installer.sh) -y -h myserver -p 7682 -k <token>
+bash <(curl -fsSL https://www.github.com/franciscocabral/zed-remote-open/raw/v1.1.0/remote/remote-linux-installer.sh) -y -h myserver -p 7682 -k <token>
 ```
 
 With no options, the installer asks for each value:
