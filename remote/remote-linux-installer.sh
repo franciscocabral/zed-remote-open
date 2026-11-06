@@ -25,6 +25,7 @@ INSTALLER_VERSION="1.1.0"
 BASE_URL="${ZED_REMOTE_OPEN_URL:-https://github.com/franciscocabral/zed-remote-open/raw/v1.1.0}"
 BIN_DIR="$HOME/.local/bin"
 DEST="$BIN_DIR/zed"
+BROWSE_LINK="$BIN_DIR/zed-browse"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zed-remote-open"
 CONFIG_FILE="$CONFIG_DIR/settings.json"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zed-remote-open"
@@ -118,6 +119,7 @@ if ((uninstall)); then
     else
         targets=("$DEST")
     fi
+    if [[ -L $BROWSE_LINK ]]; then targets+=("$BROWSE_LINK"); fi
     targets+=("$CONFIG_DIR" "$CACHE_DIR")
     echo "This removes:"
     printf '  %s\n' "${targets[@]}" "$DEST.bak.* (backup copies)"
@@ -131,11 +133,31 @@ fi
 # --- Requirements ---
 
 ((BASH_VERSINFO[0] >= 4)) || die "Bash 4 or later is necessary (you have $BASH_VERSION)"
-for cmd in realpath dirname hostname mktemp sort sed grep; do
+for cmd in realpath dirname hostname mktemp sort sed grep sha256sum; do
     command -v "$cmd" >/dev/null || die "the '$cmd' command is necessary"
 done
 command -v git >/dev/null ||
     warn "git is not installed. zed will not open the Git root of a file."
+
+# --- Checksums ---
+
+# verify_checksum FILE NAME: compares the SHA-256 of FILE with the line of NAME
+# in SHA256SUMS of the same version. It finds a damaged or changed download.
+verify_checksum() {
+    local file=$1 name=$2 sums expected actual
+    sums=$(curl -fsSL "$BASE_URL/SHA256SUMS" 2>/dev/null) || sums=""
+    expected=$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1 }' <<<"$sums" | head -n 1)
+    actual=$(sha256sum <"$file" | cut -d' ' -f1)
+    if [[ -z $expected ]]; then
+        ((force)) || die "cannot get the checksum of $name from $BASE_URL/SHA256SUMS (use -f to install without the check)"
+        warn "no checksum for $name: installed without the check (-f)"
+    elif [[ $expected != "$actual" ]]; then
+        ((force)) || die "the checksum of $name is not correct: the download is damaged or changed (use -f to install it anyway)"
+        warn "the checksum of $name is not correct: installed anyway (-f)"
+    else
+        info "Checksum of $name: correct"
+    fi
+}
 
 # --- New version ---
 
@@ -150,6 +172,7 @@ else
     command -v curl >/dev/null || die "the 'curl' command is necessary to download the zed script"
     info "Downloading $BASE_URL/remote/zed"
     curl -fsSL "$BASE_URL/remote/zed" -o "$tmp" || die "cannot download the zed script"
+    verify_checksum "$tmp" remote/zed
 fi
 grep -q '^# zed-remote-open:' "$tmp" || die "the zed script is not correct (no zed-remote-open header)"
 
@@ -294,6 +317,12 @@ if ((replace)); then
     install -m 755 -- "$tmp" "$DEST"
     info "Installed zed-remote-open $new_version in $DEST"
 fi
+# "zed-browse URL" opens a URL in the local browser (for BROWSER=zed-browse).
+if [[ ! -e $BROWSE_LINK || -L $BROWSE_LINK ]]; then
+    ln -sfn -- zed "$BROWSE_LINK"
+else
+    warn "$BROWSE_LINK exists and is not a link to zed: it stays"
+fi
 
 settings=(-c "host:$host" -c "port:$port" -c "target:$target")
 [[ -z $token ]] || settings+=(-c "token:$token")
@@ -317,6 +346,11 @@ echo
 if "$DEST" --doctor; then
     echo
     info "Done. Try: zed .     (help: zed --help)"
+    echo
+    echo "Optional, in your shell startup file:"
+    echo "  export BROWSER=zed-browse                 # server URLs open in the local browser"
+    echo "  eval \"\$(zed --completion zsh)\"           # zsh (after compinit); bash: --completion bash"
+    echo "  git config --global core.editor \"zed -w\"  # Git opens files in Zed"
 else
     echo
     warn "zed is installed, but it cannot use the listener now. Read the [fail] line above."

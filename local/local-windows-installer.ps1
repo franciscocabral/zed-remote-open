@@ -10,9 +10,14 @@
     - Asks for the port, the SSH hosts and the token.
     - Installs zed-listener.pyw and listener.json in %LOCALAPPDATA%\zed-remote-open.
     - Creates a shortcut in the Windows Startup folder and starts the listener.
-    - Adds the RemoteForward to ~/.ssh/config in a block between
-      "# BEGIN zed-remote-open" and "# END zed-remote-open" markers. It asks
-      before the change, keeps a backup copy, and verifies the result with "ssh -G".
+    - SSH tunnel, -Tunnel managed (recommended): the listener keeps its own SSH
+      connection to the first host with the forward, and reconnects. It needs
+      SSH key authentication. -Tunnel config: adds the RemoteForward to
+      ~/.ssh/config in a block between "# BEGIN zed-remote-open" and
+      "# END zed-remote-open" markers (it asks before the change, keeps a backup
+      copy, and verifies the result with "ssh -G").
+    - -WaitClose (experimental): "zed -w" also ends when you close the tab.
+    - Compares the downloaded listener with SHA256SUMS of the same version.
     - Shows the command that installs zed on the server, with the same options.
 
 .EXAMPLE
@@ -36,6 +41,9 @@ param(
     [switch]$NoAutostart,
     [switch]$Yes,
     [switch]$Uninstall,
+    [ValidateSet('managed', 'config')]
+    [string]$Tunnel,
+    [switch]$WaitClose,
     [string]$BaseUrl = 'https://github.com/franciscocabral/zed-remote-open/raw/v1.1.0'
 )
 
@@ -120,8 +128,14 @@ function Get-ListenerProcess {
         Where-Object { $_.CommandLine -like '*zed-listener*' })
 }
 
+# The managed SSH tunnels of the listener ("-E ...\zed-remote-open\tunnel-HOST.log").
+function Get-TunnelProcess {
+    return @(Get-CimInstance Win32_Process -Filter "Name = 'ssh.exe'" |
+        Where-Object { $_.CommandLine -like '*zed-remote-open*tunnel-*' })
+}
+
 function Stop-Listener {
-    $running = Get-ListenerProcess
+    $running = @(Get-ListenerProcess) + @(Get-TunnelProcess)
     if ($running.Count -eq 0) { return }
     Write-Step 'A zed listener runs now. The installer must stop it.'
     $running | ForEach-Object { Write-Note "PID $($_.ProcessId): $($_.CommandLine)" }
@@ -373,6 +387,36 @@ if ($localFile -and (Test-Path $localFile)) {
     $url = "$BaseUrl/local/zed-listener.pyw"
     Write-Note "Downloading $url"
     Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $newFile
+    # Compare with SHA256SUMS of the same version: finds a damaged or changed download.
+    $expected = $null
+    try {
+        $sums = (Invoke-WebRequest -UseBasicParsing -Uri "$BaseUrl/SHA256SUMS").Content
+        if ($sums -is [byte[]]) { $sums = [Text.Encoding]::UTF8.GetString($sums) }
+        foreach ($line in ($sums -split "`n")) {
+            $parts = @($line.Trim() -split '\s+')
+            if ($parts.Count -eq 2 -and $parts[1].TrimStart('*') -eq 'local/zed-listener.pyw') {
+                $expected = $parts[0].ToLower()
+            }
+        }
+    } catch {
+        $expected = $null
+    }
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $newFile).Hash.ToLower()
+    if (-not $expected) {
+        if (-not $Force) {
+            Remove-Item $newFile -ErrorAction SilentlyContinue
+            Stop-WithError "Cannot get the checksum of the listener from $BaseUrl/SHA256SUMS (use -Force to install without the check)."
+        }
+        Write-Warn 'No checksum for the listener: installed without the check (-Force).'
+    } elseif ($expected -ne $actual) {
+        if (-not $Force) {
+            Remove-Item $newFile -ErrorAction SilentlyContinue
+            Stop-WithError 'The checksum of the listener is not correct: the download is damaged or changed (use -Force to install it anyway).'
+        }
+        Write-Warn 'The checksum of the listener is not correct: installed anyway (-Force).'
+    } else {
+        Write-Note 'Checksum: correct'
+    }
 }
 $newVersion = Get-ListenerVersion $newFile
 if (-not $newVersion -or $newVersion -eq 'unknown') {
@@ -493,6 +537,45 @@ if ($Token) {
     Write-Note 'Made a new token.'
 }
 
+# --- 7b. SSH tunnel and wait mode ---
+
+$tunnelMode = $Tunnel
+if (-not $tunnelMode) {
+    if ($current -and $current.tunnel_hosts) {
+        $tunnelMode = 'managed'
+    } elseif (Confirm-Action ('Use a managed SSH tunnel? The listener keeps its own SSH connection ' +
+            'with the forward, and reconnects. It needs SSH key authentication.') $true) {
+        $tunnelMode = 'managed'
+    } else {
+        $tunnelMode = 'config'
+    }
+}
+$tunnelHost = $Hosts[0]
+if ($tunnelMode -eq 'managed') {
+    Write-Step "Checking SSH key authentication to $tunnelHost"
+    $keyOk = $false
+    if ($script:SshExe) {
+        $out = [IO.Path]::GetTempFileName()
+        $err = [IO.Path]::GetTempFileName()
+        $check = Start-Process -FilePath $script:SshExe -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err `
+            -ArgumentList @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', $tunnelHost, 'true')
+        $keyOk = ($check.ExitCode -eq 0)
+        Remove-Item $out, $err -ErrorAction SilentlyContinue
+    }
+    if ($keyOk) {
+        Write-Note 'It works: the tunnel can connect without a password.'
+    } else {
+        Write-Warn "'ssh $tunnelHost' does not work without a password now (BatchMode)."
+        if (-not $Tunnel -and (Confirm-Action 'Use a RemoteForward in ~/.ssh/config instead?' $true)) {
+            $tunnelMode = 'config'
+        } else {
+            Write-Note 'The tunnel tries again (at most every 60 seconds) until key authentication works.'
+        }
+    }
+}
+$useWaitClose = [bool]$WaitClose -or ($current -and $current.wait_close -eq $true)
+
 # --- 8. Install the listener and its settings ---
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -505,6 +588,11 @@ Remove-Item $newFile -ErrorAction SilentlyContinue
 $settings = [ordered]@{ port = $Port; hosts = @($Hosts) }
 if ($tokenValue) { $settings.token = $tokenValue }
 if ($zedExe) { $settings.zed_command = $zedExe }
+if ($tunnelMode -eq 'managed') {
+    $settings.tunnel_hosts = @($tunnelHost)
+    if ($script:SshExe) { $settings.ssh_command = $script:SshExe }
+}
+if ($useWaitClose) { $settings.wait_close = $true }
 [IO.File]::WriteAllText($ConfigFile, (ConvertTo-Json -InputObject $settings) + "`n", $Utf8NoBom)
 Write-Note "Saved the settings in $ConfigFile"
 
@@ -539,13 +627,37 @@ if ($response -like 'OK *') {
 $sshProblems = @()
 if ($SkipSshConfig) {
     $sshProblems += 'You used -SkipSshConfig.'
+} elseif ($tunnelMode -eq 'managed') {
+    # The tunnel adds its own forward: the block is not necessary.
+    Remove-SshBlock
+    if ($script:SshExe) {
+        $state = Get-ForwardState -SshHost $tunnelHost -Number $Port -ConfigFile ''
+        if ($state -in @('ok', 'conflict')) {
+            Write-Warn ("Your ~/.ssh/config entry for '$tunnelHost' has a RemoteForward for port $Port. " +
+                'The tunnel uses it, but your SSH sessions also ask for it and show the warning ' +
+                '"remote port forwarding failed". Remove that line from your entry.')
+        }
+    }
 } else {
     $sshProblems = Update-SshConfig -HostList $Hosts -Number $Port
 }
 
 $forwardLine = "    RemoteForward 127.0.0.1:$Port 127.0.0.1:$Port"
 Write-Host ''
-if ($sshProblems.Count -eq 0) {
+if ($tunnelMode -eq 'managed' -and $sshProblems.Count -eq 0) {
+    Start-Sleep -Seconds 2
+    if ((Get-TunnelProcess).Count -gt 0) {
+        Write-Host '=====================================================================' -ForegroundColor Green
+        Write-Host " The managed SSH tunnel to '$tunnelHost' runs." -ForegroundColor Green
+        Write-Host '=====================================================================' -ForegroundColor Green
+    } else {
+        Write-Warn ("The managed SSH tunnel to '$tunnelHost' does not run now. " +
+            "Read $(Join-Path $InstallDir "tunnel-$tunnelHost.log") and $LogFile.")
+    }
+    Write-Host ''
+    Write-Host "- The listener keeps the SSH connection with the forward of port $Port, and"
+    Write-Host '  reconnects after a disconnect. Your SSH sessions need no RemoteForward.'
+} elseif ($sshProblems.Count -eq 0) {
     Write-Host '=====================================================================' -ForegroundColor Green
     Write-Host ' The SSH configuration is correct.' -ForegroundColor Green
     Write-Host '=====================================================================' -ForegroundColor Green
@@ -570,8 +682,10 @@ $forwardLine
 - After the change, close the SSH sessions to the server and connect again.
 "@
 }
-Write-Host '- Only one SSH session at a time can forward the port. The other sessions'
-Write-Host '  show the warning "remote port forwarding failed". This is normal.'
+if ($tunnelMode -eq 'config') {
+    Write-Host '- Only one SSH session at a time can forward the port. The other sessions'
+    Write-Host '  show the warning "remote port forwarding failed". This is normal.'
+}
 
 $remoteCommand = "bash <(curl -fsSL $BaseUrl/remote/remote-linux-installer.sh) -y -h $($Hosts[0]) -p $Port"
 if ($tokenValue) { $remoteCommand += " -k $tokenValue" }

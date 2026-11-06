@@ -11,6 +11,11 @@
 #   -P PYTHON   Python 3.10 or later to run the listener.
 #   -y          Ask no questions: answer yes and use the default values.
 #   -f          Replace a newer version, or install a listener of a different version.
+#   -T MODE     SSH tunnel: "managed" (the listener keeps its own SSH connection
+#               to the first host; needs SSH key authentication) or "config"
+#               (a RemoteForward in ~/.ssh/config for your SSH sessions).
+#   -W          Experimental: "zed -w" also ends when you close the tab (the
+#               listener reads the Zed database).
 #   -A          Do not start the listener at login.
 #   -S          Do not change ~/.ssh/config.
 #   -u          Uninstall.
@@ -55,15 +60,17 @@ usage() {
 
 # --- Options ---
 
-opt_port="" opt_hosts="" opt_token="" no_token=0 opt_python=""
+opt_port="" opt_hosts="" opt_token="" no_token=0 opt_python="" opt_tunnel="" opt_wait_close=0
 yes=0 force=0 no_autostart=0 skip_ssh=0 uninstall=0
-while getopts ":p:H:k:KP:yfASu" o; do
+while getopts ":p:H:k:KP:T:WyfASu" o; do
     case $o in
         p) opt_port=$OPTARG ;;
         H) opt_hosts=$OPTARG ;;
         k) opt_token=$OPTARG ;;
         K) no_token=1 ;;
         P) opt_python=$OPTARG ;;
+        T) opt_tunnel=$OPTARG ;;
+        W) opt_wait_close=1 ;;
         y) yes=1 ;;
         f) force=1 ;;
         A) no_autostart=1 ;;
@@ -97,8 +104,12 @@ ask() {
 
 # --- Listener processes and autostart ---
 
+# The listener and its managed SSH tunnels ("-E .../zed-remote-open/tunnel-HOST.log").
 listener_pids() {
-    pgrep -f 'zed-listener\.pyw --config' 2>/dev/null | grep -v "^$$\$" || true
+    {
+        pgrep -f 'zed-listener\.pyw --config' 2>/dev/null
+        pgrep -f 'zed-remote-open/tunnel-' 2>/dev/null
+    } | grep -v "^$$\$" || true
 }
 
 stop_listeners() {
@@ -337,6 +348,19 @@ else
     command -v curl >/dev/null || die "the 'curl' command is necessary"
     note "Downloading $BASE_URL/local/zed-listener.pyw"
     curl -fsSL "$BASE_URL/local/zed-listener.pyw" -o "$new_file" || die "cannot download the listener"
+    # Compare with SHA256SUMS of the same version: finds a damaged or changed download.
+    sums=$(curl -fsSL "$BASE_URL/SHA256SUMS" 2>/dev/null) || sums=""
+    expected=$(printf '%s\n' "$sums" | awk '$2 == "local/zed-listener.pyw" { print $1 }' | head -n 1)
+    actual=$(py 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$new_file")
+    if [[ -z $expected ]]; then
+        ((force)) || die "cannot get the checksum of the listener from $BASE_URL/SHA256SUMS (use -f to install without the check)"
+        warn "no checksum for the listener: installed without the check (-f)"
+    elif [[ $expected != "$actual" ]]; then
+        ((force)) || die "the checksum of the listener is not correct: the download is damaged or changed (use -f to install it anyway)"
+        warn "the checksum of the listener is not correct: installed anyway (-f)"
+    else
+        note "Checksum: correct"
+    fi
 fi
 new_version=$(listener_version "$new_file")
 [[ -n $new_version && $new_version != unknown ]] || die "the new listener file is not correct (no version)"
@@ -438,6 +462,41 @@ else
     token=""
 fi
 
+# --- 7b. SSH tunnel and wait mode ---
+
+current_tunnel=$(json_get "$CONFIG" tunnel_hosts 2>/dev/null || true)
+tunnel_mode=$opt_tunnel
+if [[ -z $tunnel_mode ]]; then
+    if [[ -n $current_tunnel ]]; then
+        tunnel_mode=managed
+    elif confirm "Use a managed SSH tunnel? The listener keeps its own SSH connection with the forward, and reconnects. It needs SSH key authentication." y; then
+        tunnel_mode=managed
+    else
+        tunnel_mode=config
+    fi
+fi
+case $tunnel_mode in managed | config) ;; *) die "-T must be 'managed' or 'config'" ;; esac
+tunnel_host=${hosts[0]}
+if [[ $tunnel_mode == managed ]]; then
+    info "Checking SSH key authentication to $tunnel_host"
+    if command -v ssh >/dev/null &&
+        ssh -o BatchMode=yes -o ConnectTimeout=10 "$tunnel_host" true </dev/null >/dev/null 2>&1; then
+        note "It works: the tunnel can connect without a password."
+    else
+        warn "'ssh $tunnel_host' does not work without a password now (BatchMode)."
+        if [[ -z $opt_tunnel ]] && confirm "Use a RemoteForward in ~/.ssh/config instead?" y; then
+            tunnel_mode=config
+        else
+            note "The tunnel tries again (at most every 60 seconds) until key authentication works."
+        fi
+    fi
+fi
+
+wait_close=0
+if ((opt_wait_close)) || [[ $(json_get "$CONFIG" wait_close 2>/dev/null || true) == True ]]; then
+    wait_close=1
+fi
+
 # --- 8. Install ---
 
 mkdir -p -- "$DATA_DIR"
@@ -446,16 +505,22 @@ if ((replace)); then
     info "Installing listener $new_version in $DATA_DIR"
     cp -- "$new_file" "$LISTENER"
 fi
+tunnel_hosts=""
+[[ $tunnel_mode != managed ]] || tunnel_hosts=$tunnel_host
 (umask 077 && py 'import json, sys
-port, hosts, token, zed, path = sys.argv[1:]
+port, hosts, token, zed, tunnel, wait_close, path = sys.argv[1:]
 data = {"port": int(port), "hosts": hosts.split(",")}
 if token:
     data["token"] = token
 if zed:
     data["zed_command"] = zed
+if tunnel:
+    data["tunnel_hosts"] = [tunnel]
+if wait_close == "1":
+    data["wait_close"] = True
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
-    f.write("\n")' "$port" "$(IFS=,; echo "${hosts[*]}")" "$token" "$ZED" "$CONFIG")
+    f.write("\n")' "$port" "$(IFS=,; echo "${hosts[*]}")" "$token" "$ZED" "$tunnel_hosts" "$wait_close" "$CONFIG")
 note "Saved the settings in $CONFIG"
 
 # --- 9. Autostart and start ---
@@ -514,13 +579,33 @@ fi
 ssh_ok=0
 if ((skip_ssh)); then
     add_problem "You used -S."
+elif [[ $tunnel_mode == managed ]]; then
+    # The tunnel adds its own forward: the block is not necessary.
+    remove_ssh_block
+    if command -v ssh >/dev/null; then
+        state=$(forward_state "$tunnel_host" "$port" "$SSH_CONFIG")
+        if [[ $state == ok || $state == conflict ]]; then
+            warn "Your ~/.ssh/config entry for '$tunnel_host' has a RemoteForward for port $port.
+    The tunnel uses it, but your SSH sessions also ask for it and show the warning
+    \"remote port forwarding failed\". Remove that line from your entry."
+        fi
+    fi
 else
     update_ssh_config
 fi
 [[ -n $ssh_problems ]] || ssh_ok=1
 
 echo
-if ((ssh_ok)); then
+if [[ $tunnel_mode == managed && $ssh_ok == 1 ]]; then
+    sleep 2
+    if pgrep -f "zed-remote-open/tunnel-$tunnel_host" >/dev/null 2>&1; then
+        printf '\033[1;32m%s\033[0m\n' "The managed SSH tunnel to '$tunnel_host' runs."
+    else
+        warn "The managed SSH tunnel to '$tunnel_host' does not run now. Read $DATA_DIR/tunnel-$tunnel_host.log and $LOG."
+    fi
+    echo "- The listener keeps the SSH connection with the forward of port $port, and"
+    echo "  reconnects after a disconnect. Your SSH sessions need no RemoteForward."
+elif ((ssh_ok)); then
     printf '\033[1;32m%s\033[0m\n' "The SSH configuration is correct."
     echo "- Close the SSH sessions to the server and connect again. The forward starts"
     echo "  only with a new connection."
@@ -535,8 +620,10 @@ else
     echo
     echo "Then close the SSH sessions to the server and connect again."
 fi
-echo "- Only one SSH session at a time can forward the port. The other sessions show"
-echo "  the warning \"remote port forwarding failed\". This is normal."
+if [[ $tunnel_mode == config ]]; then
+    echo "- Only one SSH session at a time can forward the port. The other sessions show"
+    echo "  the warning \"remote port forwarding failed\". This is normal."
+fi
 
 remote_cmd="bash <(curl -fsSL $BASE_URL/remote/remote-linux-installer.sh) -y -h ${hosts[0]} -p $port"
 [[ -z $token ]] || remote_cmd="$remote_cmd -k $token"
