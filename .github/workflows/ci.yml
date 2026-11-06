@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: shellcheck remote/zed remote/*.sh local/*.sh scripts/*.sh tests/*.sh
+      - name: Ruff
+        run: pipx run ruff==0.6.9 check local/zed-listener.pyw tests
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.23.0 -Force -Scope CurrentUser
+          $results = foreach ($dir in 'local', 'tests') {
+              Invoke-ScriptAnalyzer -Path $dir -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+          }
+          $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+          if ($results) { exit 1 }
+      - name: Versions
+        run: tests/check-versions.sh
+
+  test-unix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.10" }
+          - { os: ubuntu-latest, python: "3.13" }
+          - { os: macos-latest, python: "3.12" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit and end-to-end tests
+        run: python -m unittest discover -s tests -v
+      - name: Installer tests
+        run: bash tests/test-unix-installer.sh
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Installer tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: .\tests\test-windows-installer.ps1
+
+  # On main: make the tag, update the README and the download URLs, and publish
+  # the release. The release commit has "[skip ci]", and a push with
+  # GITHUB_TOKEN starts no workflow, so there is no loop.
+  release:
+    needs: [lint, test-unix, test-windows]
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      !contains(github.event.head_commit.message, '[skip ci]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Next version
+        id: version
+        run: echo "version=$(scripts/next-version.sh)" >>"$GITHUB_OUTPUT"
+      - name: Commit and tag
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          scripts/set-version.sh "$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(release): v$VERSION [skip ci]"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin HEAD:main
+          git push origin "v$VERSION"
+      - name: Publish the release
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=(remote/zed remote/remote-linux-installer.sh local/zed-listener.pyw
+                 local/local-windows-installer.ps1 local/local-unix-installer.sh)
+          sha256sum "${files[@]}" | sed 's#  .*/#  #' >SHA256SUMS
+          gh release create "v$VERSION" --title "v$VERSION" --generate-notes "${files[@]}" SHA256SUMS

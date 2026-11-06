@@ -1,38 +1,54 @@
 #!/usr/bin/env bash
-# zed-remote-open: opens files and directories of this server in the local Zed.
+# zed-remote-open: opens files and directories of this server in the Zed
+# editor of your local computer.
 #
 # For a file in a Git repository, it also sends the repository root, so Zed
 # opens the project and the file in one window. If a path does not exist, it
 # asks before it creates it.
 #
-# Protocol: one TCP connection, one line "host:/absolute/path" for each path.
+# Protocol "zro 2": see local/zed-listener.pyw.
 set -euo pipefail
 
-VERSION="1.0.0"
-CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/zed-remote-open/settings.json"
-KEYS=(host port target)
+VERSION="1.1.0"
+REPO="franciscocabral/zed-remote-open"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zed-remote-open"
+CONFIG_FILE="$CONFIG_DIR/settings.json"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zed-remote-open"
+KEYS=(host port target token window)
+RESPONSE_TIMEOUT=10
 
 usage() {
     cat <<EOF
-Usage: zed [-p PORT] [-h HOST] [-t TARGET] [-c KEY:VALUE]... [PATH...]
+Usage: zed [OPTIONS] [PATH[:LINE[:COLUMN]]...]
+       command | zed [OPTIONS] -
 
 Opens each PATH of this server in the Zed editor of your local computer.
 With no PATH, it opens the current directory. For a file in a Git
-repository, it also opens the repository root.
+repository, it also opens the repository root. "-" opens the text from stdin.
 
 Options:
-  -p PORT        Port of the listener (default: 7682).
-  -h HOST        SSH host name that the local computer uses for this server
-                 (default: $(hostname -s)).
-  -t TARGET      Address of the listener (default: 127.0.0.1).
-  -c KEY:VALUE   Save a value in the settings file. KEY is host, port or
-                 target. An empty VALUE removes the key. You can use -c more
-                 than one time. With -c and no PATH, zed opens nothing.
+  -w             Wait until you save the file in Zed (for EDITOR="zed -w").
+                 Enter in the terminal continues without a save; Ctrl+C
+                 cancels (exit code 1). With Zed autosave, the first
+                 autosave ends the wait.
+  -n             Open in a new window.
+  -a             Open in the current window (the window of the project, if it
+                 is open). This is the default.
+  -p PORT        Port of the listener.
+  -h HOST        SSH host name that the local computer uses for this server.
+  -t TARGET      Address of the listener.
+  -c KEY:VALUE   Save a value in the settings file. KEY is one of:
+                 ${KEYS[*]}. An empty VALUE removes the key. You can use -c
+                 more than one time. With -c and no PATH, zed opens nothing.
+  --doctor       Check the settings and the connection to the listener.
+  --update       Install the latest release of zed.
+  --uninstall    Remove zed and its settings from this server.
   --help         Show this help.
   --version      Show the version.
 
 Precedence: option > environment variable > settings file > default.
-Environment variables: ZED_SSH_HOST, ZED_LISTENER_PORT, ZED_LISTENER_HOST.
+Environment variables: ZED_SSH_HOST, ZED_LISTENER_PORT, ZED_LISTENER_HOST,
+ZED_LISTENER_TOKEN, ZED_WINDOW.
 Settings file: $CONFIG_FILE
 EOF
 }
@@ -42,11 +58,17 @@ die() {
     exit 1
 }
 
+warn() { echo "zed: $*" >&2; }
+
+# --- Settings ---
+
 default_value() {
     case $1 in
         host) hostname -s ;;
         port) echo 7682 ;;
         target) echo 127.0.0.1 ;;
+        window) echo current ;;
+        token) echo "" ;;
     esac
 }
 
@@ -55,6 +77,8 @@ env_value() {
         host) echo "${ZED_SSH_HOST-}" ;;
         port) echo "${ZED_LISTENER_PORT-}" ;;
         target) echo "${ZED_LISTENER_HOST-}" ;;
+        token) echo "${ZED_LISTENER_TOKEN-}" ;;
+        window) echo "${ZED_WINDOW-}" ;;
     esac
 }
 
@@ -65,6 +89,8 @@ valid_value() {
         host) [[ $value =~ ^[A-Za-z0-9._-]+$ ]] ;;
         port) [[ $value =~ ^[0-9]{1,5}$ ]] && ((10#$value >= 1 && 10#$value <= 65535)) ;;
         target) [[ $value =~ ^[A-Za-z0-9.-]+$ ]] ;;
+        token) [[ $value =~ ^[A-Za-z0-9_-]+$ ]] && ((${#value} >= 16 && ${#value} <= 256)) ;;
+        window) [[ $value == current || $value == new ]] ;;
         *) return 1 ;;
     esac
 }
@@ -92,8 +118,8 @@ read_settings() {
 
 write_settings() {
     local key sep="" tmp
-    mkdir -p -- "$(dirname -- "$CONFIG_FILE")"
-    tmp=$(mktemp "$CONFIG_FILE.XXXXXX")
+    mkdir -p -- "$CONFIG_DIR"
+    tmp=$(umask 077 && mktemp "$CONFIG_FILE.XXXXXX")
     {
         echo "{"
         for key in "${KEYS[@]}"; do
@@ -107,7 +133,71 @@ write_settings() {
         done
         printf '\n}\n'
     } >"$tmp"
-    mv -- "$tmp" "$CONFIG_FILE"
+    mv -- "$tmp" "$CONFIG_FILE" # The file can contain the token: mode 600.
+}
+
+declare -A cfg=() src=()
+
+resolve_settings() {
+    local key value
+    for key in "${KEYS[@]}"; do
+        value=${opt[$key]-} src[$key]=option
+        [[ -n $value ]] || { value=$(env_value "$key") && src[$key]=environment; }
+        [[ -n $value ]] || { value=${saved[$key]-} && src[$key]=settings; }
+        [[ -n $value ]] || { value=$(default_value "$key") && src[$key]=default; }
+        if [[ -n $value ]] && ! valid_value "$key" "$value"; then
+            die "'$value' is not a valid $key (from ${src[$key]})"
+        fi
+        cfg[$key]=$value
+    done
+}
+
+# --- Connection to the listener ---
+
+# request MODE: sends the request with the lines in req_paths.
+# Sets "response" to the first response line. Keeps the connection on fd 3.
+request() {
+    local mode=$1 line
+    if ! { exec 3<>"/dev/tcp/${cfg[target]}/${cfg[port]}"; } 2>/dev/null; then
+        response="ERR cannot connect to the listener at ${cfg[target]}:${cfg[port]}"
+        return 0
+    fi
+    {
+        echo "zro 2"
+        if [[ -n ${cfg[token]} ]]; then echo "token ${cfg[token]}"; fi
+        echo "host ${cfg[host]}"
+        echo "mode $mode"
+        echo "window ${cfg[window]}"
+        for line in "${req_paths[@]+"${req_paths[@]}"}"; do echo "path $line"; done
+        echo "end"
+    } >&3
+    if ! IFS= read -r -t "$RESPONSE_TIMEOUT" response <&3; then
+        response="ERR no response from the listener at ${cfg[target]}:${cfg[port]}"
+    fi
+    response=${response%$'\r'}
+}
+
+version_hint() {
+    local other=$1
+    [[ $other == "$VERSION" ]] && return 0
+    if [[ $(printf '%s\n%s\n' "$other" "$VERSION" | sort -V | head -n 1) == "$VERSION" ]]; then
+        warn "the listener has version $other and zed has $VERSION. Run: zed --update"
+    else
+        warn "the listener has version $other and zed has $VERSION. Update the listener on the local computer."
+    fi
+}
+
+# --- Paths ---
+
+req_paths=()
+declare -A seen=()
+
+add_path() { # LINE COLUMN PATH
+    local entry="$1 $2 $3"
+    if [[ -z ${seen[$entry]+set} ]]; then
+        seen[$entry]=1
+        req_paths+=("$entry")
+    fi
 }
 
 # Makes sure that the path exists. Returns 1 if the user does not create it.
@@ -117,7 +207,7 @@ ensure_exists() {
     [[ -e $path ]] && return 0
 
     if [[ ! -t 0 ]]; then
-        echo "zed: '$arg' does not exist" >&2
+        warn "'$arg' does not exist"
         return 1
     fi
 
@@ -135,22 +225,267 @@ ensure_exists() {
     fi
 }
 
+# Saves stdin in a file of the cache directory and prints its path.
+stdin_file() {
+    [[ ! -t 0 ]] || die "'-' reads the text from stdin, but stdin is a terminal"
+    mkdir -p -- "$CACHE_DIR"
+    chmod 700 "$CACHE_DIR"
+    find "$CACHE_DIR" -name 'stdin-*' -type f -mtime +7 -delete 2>/dev/null || true
+    local file
+    file=$(mktemp "$CACHE_DIR/stdin-$(date +%Y%m%d-%H%M%S).XXXXXX")
+    cat >"$file"
+    echo "$file"
+}
+
+# Splits "path:line[:column]". A path that exists is never split.
+split_position() {
+    p_path=$1 p_line=0 p_col=0
+    [[ -e $1 ]] && return 0
+    if [[ $1 =~ ^(.+):([0-9]{1,9}):([0-9]{1,9})$ ]]; then
+        p_path=${BASH_REMATCH[1]} p_line=$((10#${BASH_REMATCH[2]})) p_col=$((10#${BASH_REMATCH[3]}))
+    elif [[ $1 =~ ^(.+):([0-9]{1,9})$ ]]; then
+        p_path=${BASH_REMATCH[1]} p_line=$((10#${BASH_REMATCH[2]}))
+    fi
+}
+
+# --- Actions ---
+
+run_open() {
+    local mode=$1 arg path root used_stdin=0
+    (($# > 1)) || set -- "$1" .
+    shift
+
+    for arg in "$@"; do
+        if [[ $arg == - ]]; then
+            ((used_stdin == 0)) || die "you can use '-' only one time"
+            used_stdin=1
+            add_path 0 0 "$(stdin_file)"
+            continue
+        fi
+
+        split_position "$arg"
+        path=$(realpath -m -- "$p_path")
+        if [[ $path == *$'\n'* ]]; then
+            warn "skipped '$arg' (the path has a newline)"
+            continue
+        fi
+        ensure_exists "$p_path" "$path" || continue
+
+        if [[ $mode == open && ! -d $path ]]; then
+            root=$(git -C "$(dirname -- "$path")" rev-parse --show-toplevel 2>/dev/null || true)
+            [[ -n $root ]] && add_path 0 0 "$root"
+        fi
+        add_path "$p_line" "$p_col" "$path"
+    done
+
+    ((${#req_paths[@]} > 0)) || die "no path to open"
+
+    request "$mode"
+    case $response in
+        "OK "*) version_hint "${response#OK }" ;;
+        "ERR "*) die "${response#ERR }" ;;
+        *) die "unexpected response from the listener: $response" ;;
+    esac
+
+    local line col position
+    for arg in "${req_paths[@]}"; do
+        read -r line col _ <<<"$arg"
+        position=""
+        if ((line > 0)); then position=":$line"; fi
+        if ((col > 0)); then position="$position:$col"; fi
+        echo "Opening Zed at ${arg#* * }$position"
+    done
+
+    exec 3<&-
+    if [[ $mode == wait ]]; then
+        wait_for_save
+    fi
+}
+
+# Prints a signature that changes when a file is saved: modification time
+# (with nanoseconds), size and inode (a save can replace the file).
+file_signature() {
+    stat -c '%y %s %i' -- "$1" 2>/dev/null || echo missing
+}
+
+# Waits until one of the files is saved in Zed. The Zed CLI cannot wait until
+# a remote file is closed (--wait returns at once for ssh:// URLs), and the
+# server cannot see when a tab closes. So the save is the signal.
+# Enter in the terminal also ends the wait (exit 0); Ctrl+C cancels (exit 1).
+wait_for_save() {
+    local entry path i changed answer tty_fd=""
+    local -a files=() before=()
+    for entry in "${req_paths[@]}"; do
+        path=${entry#* * }
+        files+=("$path")
+        before+=("$(file_signature "$path")")
+    done
+
+    trap 'echo; warn "cancelled"; exit 1' INT TERM
+    if { exec 4</dev/tty; } 2>/dev/null; then
+        tty_fd=4
+        echo "Save the file in Zed to continue. (Enter: continue without a save. Ctrl+C: cancel.)"
+    else
+        echo "Save the file in Zed to continue. (Ctrl+C: cancel.)"
+    fi
+
+    while true; do
+        if [[ -n $tty_fd ]]; then
+            if IFS= read -r -t 0.3 answer <&4; then
+                exit 0
+            fi
+        else
+            sleep 0.3
+        fi
+        changed=""
+        for i in "${!files[@]}"; do
+            if [[ $(file_signature "${files[i]}") != "${before[i]}" ]]; then
+                changed=${files[i]}
+            fi
+        done
+        [[ -n $changed ]] || continue
+        # Wait until the write is complete: the signature stays the same for 0.3 s.
+        local now later
+        now=$(file_signature "$changed")
+        while sleep 0.3 && later=$(file_signature "$changed") && [[ $later != "$now" ]]; do
+            now=$later
+        done
+        echo "Saved: $changed"
+        exit 0
+    done
+}
+
+latest_release() {
+    command -v curl >/dev/null || return 0
+    curl -fsS --max-time 5 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null |
+        sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1
+}
+
+run_doctor() {
+    local key value status=0 self found latest
+    self=$(realpath -- "${BASH_SOURCE[0]}")
+    echo "zed-remote-open $VERSION ($self)"
+    if [[ -f $CONFIG_FILE ]]; then
+        echo "Settings file: $CONFIG_FILE"
+    else
+        echo "Settings file: $CONFIG_FILE (does not exist)"
+    fi
+    echo
+    echo "Settings:"
+    for key in "${KEYS[@]}"; do
+        value=${cfg[$key]}
+        if [[ $key == token ]]; then
+            if [[ -n $value ]]; then value="set"; else value="not set"; fi
+        fi
+        printf '  %-7s %-24s (%s)\n' "$key" "$value" "${src[$key]}"
+    done
+    echo
+    echo "Checks:"
+
+    found=$(command -v zed || true)
+    if [[ -n $found && $(realpath -- "$found") == "$self" ]]; then
+        echo "  [ok]   'zed' in PATH is this script"
+    else
+        echo "  [warn] 'zed' in PATH is '${found:-nothing}', not $self"
+    fi
+
+    if command -v git >/dev/null; then
+        echo "  [ok]   git is installed"
+    else
+        echo "  [warn] git is not installed: zed cannot open the Git root of a file"
+    fi
+
+    request ping
+    exec 3<&- 2>/dev/null || true
+    case $response in
+        "OK "*)
+            echo "  [ok]   the listener at ${cfg[target]}:${cfg[port]} accepts host '${cfg[host]}' (version ${response#OK })"
+            if [[ ${response#OK } != "$VERSION" ]]; then
+                echo "  [warn] the listener version ${response#OK } is not the same as zed $VERSION"
+            fi
+            ;;
+        *)
+            status=1
+            echo "  [fail] ${response#ERR }"
+            echo "         - Is the listener running on the local computer?"
+            echo "         - Does ~/.ssh/config on the local computer forward the port"
+            echo "           (RemoteForward 127.0.0.1:${cfg[port]} 127.0.0.1:<local port>)?"
+            echo "           Connect again after a change."
+            echo "         - Are the host and the token the same as in the listener settings?"
+            ;;
+    esac
+
+    latest=$(latest_release || true)
+    if [[ -z $latest ]]; then
+        echo "  [info] cannot get the latest release from GitHub"
+    elif [[ $latest == "$VERSION" ]]; then
+        echo "  [ok]   zed is the latest release ($latest)"
+    else
+        echo "  [info] the latest release is $latest. Run: zed --update"
+    fi
+    return "$status"
+}
+
+run_update() {
+    command -v curl >/dev/null || die "the 'curl' command is necessary"
+    local tmp
+    tmp=$(mktemp)
+    trap 'rm -f -- "$tmp"' EXIT
+    echo "Downloading the latest installer..."
+    curl -fsSL "https://github.com/$REPO/releases/latest/download/remote-linux-installer.sh" -o "$tmp" ||
+        die "cannot download the installer"
+    bash "$tmp" -y
+}
+
+run_uninstall() {
+    local self answer
+    self=$(realpath -- "${BASH_SOURCE[0]}")
+    [[ -t 0 ]] || die "--uninstall asks for a confirmation: run it in a terminal"
+    echo "This removes:"
+    echo "  $self (and its .bak copies)"
+    echo "  $CONFIG_DIR"
+    echo "  $CACHE_DIR"
+    read -r -p "Continue? [y/N] " answer || answer=""
+    [[ $answer == [yY]* ]] || exit 1
+    rm -rf -- "$CONFIG_DIR" "$CACHE_DIR"
+    rm -f -- "$self".bak.* "$self"
+    echo "Removed. The listener on the local computer stays installed."
+}
+
 # --- Options ---
 
-case ${1-} in
-    --help) usage; exit 0 ;;
-    --version) echo "zed-remote-open $VERSION"; exit 0 ;;
-esac
+action=open
+args=()
+end_of_options=0
+for arg in "$@"; do
+    if ((end_of_options)); then
+        args+=("$arg")
+        continue
+    fi
+    case $arg in
+        --) end_of_options=1 args+=("$arg") ;;
+        --help) usage && exit 0 ;;
+        --version) echo "zed-remote-open $VERSION" && exit 0 ;;
+        --doctor | --update | --uninstall) action=${arg#--} ;;
+        --*) die "unknown option $arg (see zed --help)" ;;
+        *) args+=("$arg") ;;
+    esac
+done
+set -- "${args[@]+"${args[@]}"}"
 
 declare -A opt=()
 changes=()
+mode=open
 
-while getopts ":p:h:t:c:" o; do
+while getopts ":p:h:t:c:wna" o; do
     case $o in
         p) opt[port]=$OPTARG ;;
         h) opt[host]=$OPTARG ;;
         t) opt[target]=$OPTARG ;;
         c) changes+=("$OPTARG") ;;
+        w) mode="wait" ;;
+        n) opt[window]=new ;;
+        a) opt[window]=current ;;
         :) die "option -$OPTARG needs a value (see zed --help)" ;;
         *) die "unknown option -$OPTARG (see zed --help)" ;;
     esac
@@ -171,59 +506,17 @@ if ((${#changes[@]} > 0)); then
         else
             valid_value "$key" "$value" || die "'$value' is not a valid $key"
             saved[$key]=$value
+            if [[ $key == token ]]; then value="***"; fi
             echo "zed: set $key = $value in $CONFIG_FILE"
         fi
     done
     write_settings
-    (($# > 0)) || exit 0
+    [[ $action != open || $# -gt 0 ]] || exit 0
 fi
 
-declare -A cfg=()
-for key in "${KEYS[@]}"; do
-    value=${opt[$key]-}
-    [[ -n $value ]] || value=$(env_value "$key")
-    [[ -n $value ]] || value=${saved[$key]-}
-    [[ -n $value ]] || value=$(default_value "$key")
-    valid_value "$key" "$value" || die "'$value' is not a valid $key"
-    cfg[$key]=$value
-done
-
-# --- Paths ---
-
-(($# > 0)) || set -- .
-
-paths=()
-declare -A seen=()
-
-add_path() {
-    if [[ -z ${seen[$1]+set} ]]; then
-        seen[$1]=1
-        paths+=("$1")
-    fi
-}
-
-for arg in "$@"; do
-    path=$(realpath -m -- "$arg")
-
-    if [[ $path == *$'\n'* ]]; then
-        echo "zed: skipped '$arg' (the path has a newline)" >&2
-        continue
-    fi
-
-    ensure_exists "$arg" "$path" || continue
-
-    if [[ ! -d $path ]]; then
-        root=$(git -C "$(dirname -- "$path")" rev-parse --show-toplevel 2>/dev/null || true)
-        [[ -n $root ]] && add_path "$root"
-    fi
-    add_path "$path"
-done
-
-((${#paths[@]} > 0)) || die "no path to open"
-
-# One printf = one connection. Bash closes it after the last line.
-if ! printf '%s\n' "${paths[@]/#/${cfg[host]}:}" 2>/dev/null >"/dev/tcp/${cfg[target]}/${cfg[port]}"; then
-    die "cannot connect to the listener at ${cfg[target]}:${cfg[port]}"
-fi
-
-printf 'Opening Zed at %s\n' "${paths[@]}"
+case $action in
+    update) run_update ;;
+    uninstall) run_uninstall ;;
+    doctor) resolve_settings && run_doctor ;;
+    open) resolve_settings && run_open "$mode" "$@" ;;
+esac

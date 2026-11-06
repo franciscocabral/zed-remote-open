@@ -1,20 +1,33 @@
 #!/usr/bin/env bash
 # Installs the zed command of zed-remote-open in ~/.local/bin.
 #
-# Usage: remote-linux-installer.sh [-h HOST] [-p PORT] [-t TARGET] [-f]
+# Usage: remote-linux-installer.sh [-h HOST] [-p PORT] [-t TARGET] [-k TOKEN] [-y] [-f]
+#        remote-linux-installer.sh -u [-y]
 #
-# It asks for each value that you do not give. Without a terminal, it uses
-# the current setting or the default value.
+#   -h HOST    SSH host name that the local computer uses for this server.
+#   -p PORT    Port of the RemoteForward on this server (default 7682).
+#   -t TARGET  Address of the listener (default 127.0.0.1).
+#   -k TOKEN   Token of the listener. Without -k, the current token stays.
+#   -y         Ask no questions: use the given, current or default values.
+#   -f         Replace a newer version or a zed command of a different program,
+#              or install a zed of a different version than the installer.
+#   -u         Uninstall.
+#
+# The local installer shows this command with the correct options.
 #
 # If zed is already installed, it compares the versions. It updates an older
 # version, keeps the same version, and stops for a newer version or for a
-# zed command that is not from zed-remote-open. -f replaces it in all cases.
+# zed command that is not from zed-remote-open.
 set -euo pipefail
 
+# The installer installs only the zed of the same version (set by scripts/set-version.sh).
+INSTALLER_VERSION="1.1.0"
 BASE_URL="${ZED_REMOTE_OPEN_URL:-https://github.com/franciscocabral/zed-remote-open/raw/main}"
 BIN_DIR="$HOME/.local/bin"
 DEST="$BIN_DIR/zed"
-CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/zed-remote-open/settings.json"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zed-remote-open"
+CONFIG_FILE="$CONFIG_DIR/settings.json"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zed-remote-open"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARNING:\033[0m %s\n' "$*" >&2; }
@@ -24,32 +37,50 @@ die() {
 }
 
 usage() {
-    echo "Usage: remote-linux-installer.sh [-h HOST] [-p PORT] [-t TARGET] [-f]" >&2
+    cat <<'EOF2'
+Usage: remote-linux-installer.sh [-h HOST] [-p PORT] [-t TARGET] [-k TOKEN] [-y] [-f]
+       remote-linux-installer.sh -u [-y]
+
+  -h HOST    SSH host name that the local computer uses for this server.
+  -p PORT    Port of the RemoteForward on this server (default 7682).
+  -t TARGET  Address of the listener (default 127.0.0.1).
+  -k TOKEN   Token of the listener. Without -k, the current token stays.
+  -y         Ask no questions: use the given, current or default values.
+  -f         Replace a newer version or a zed command of a different program,
+             or install a zed of a different version than the installer.
+  -u         Uninstall.
+EOF2
 }
 
 # --- Options ---
 
 declare -A given=()
-force=0
-while getopts ":h:p:t:f" o; do
+force=0 yes=0 uninstall=0
+while getopts ":h:p:t:k:yfu" o; do
     case $o in
         h) given[host]=$OPTARG ;;
         p) given[port]=$OPTARG ;;
         t) given[target]=$OPTARG ;;
+        k) given[token]=$OPTARG ;;
+        y) yes=1 ;;
         f) force=1 ;;
+        u) uninstall=1 ;;
         :) die "option -$OPTARG needs a value" ;;
-        *) usage; exit 1 ;;
+        *) usage >&2; exit 1 ;;
     esac
 done
 
-# --- Requirements ---
+interactive=0
+[[ -t 0 && $yes == 0 ]] && interactive=1
 
-((BASH_VERSINFO[0] >= 4)) || die "Bash 4 or later is necessary (you have $BASH_VERSION)"
-for cmd in realpath dirname hostname mktemp sort sed grep; do
-    command -v "$cmd" >/dev/null || die "the '$cmd' command is necessary"
-done
-command -v git >/dev/null ||
-    warn "git is not installed. zed will not open the Git root of a file."
+# confirm QUESTION: returns 0 for yes. With -y, the answer is yes.
+confirm() {
+    local answer
+    ((yes)) && return 0
+    ((interactive)) || die "$1 Use -y to answer yes."
+    read -r -p "$1 [y/N] " answer </dev/tty || answer=""
+    [[ $answer == [yY]* ]]
+}
 
 # --- Versions ---
 
@@ -78,6 +109,34 @@ compare_versions() {
     fi
 }
 
+# --- Uninstall ---
+
+if ((uninstall)); then
+    if [[ -e $DEST && $(version_of "$DEST") == none ]]; then
+        warn "$DEST is not from zed-remote-open. It stays."
+        targets=()
+    else
+        targets=("$DEST")
+    fi
+    targets+=("$CONFIG_DIR" "$CACHE_DIR")
+    echo "This removes:"
+    printf '  %s\n' "${targets[@]}" "$DEST.bak.* (backup copies)"
+    confirm "Continue?" || die "uninstall stopped"
+    rm -rf -- "${targets[@]}"
+    rm -f -- "$DEST".bak.*
+    info "Removed. The listener on the local computer stays installed."
+    exit 0
+fi
+
+# --- Requirements ---
+
+((BASH_VERSINFO[0] >= 4)) || die "Bash 4 or later is necessary (you have $BASH_VERSION)"
+for cmd in realpath dirname hostname mktemp sort sed grep; do
+    command -v "$cmd" >/dev/null || die "the '$cmd' command is necessary"
+done
+command -v git >/dev/null ||
+    warn "git is not installed. zed will not open the Git root of a file."
+
 # --- New version ---
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)
@@ -96,6 +155,11 @@ grep -q '^# zed-remote-open:' "$tmp" || die "the zed script is not correct (no z
 
 new_version=$(version_of "$tmp")
 [[ $new_version != none && $new_version != unknown ]] || die "the zed script has no version"
+if [[ $new_version != "$INSTALLER_VERSION" ]] && ((!force)); then
+    die "this installer is version $INSTALLER_VERSION, but the zed script is $new_version.
+       Use the installer and zed of the same version: set ZED_REMOTE_OPEN_URL to
+       https://github.com/franciscocabral/zed-remote-open/raw/v$INSTALLER_VERSION (or use -f)."
+fi
 info "New version: $new_version"
 
 # --- Installed versions ---
@@ -121,11 +185,7 @@ if [[ -e $DEST ]]; then
     case $old_version in
         none)
             warn "$DEST is not from zed-remote-open."
-            if ((!force)); then
-                [[ -t 0 ]] || die "use -f to replace it"
-                read -r -p "Replace it? (a backup copy is kept) [y/N] " answer </dev/tty || answer=""
-                [[ $answer == [yY]* ]] || die "installation stopped"
-            fi
+            ((force)) || confirm "Replace it? (a backup copy is kept)" || die "installation stopped"
             ;;
         unknown)
             info "Installed: an old version with no version number. It will be updated." ;;
@@ -156,6 +216,7 @@ valid() {
         host) [[ $2 =~ ^[A-Za-z0-9._-]+$ ]] ;;
         port) [[ $2 =~ ^[0-9]{1,5}$ ]] && ((10#$2 >= 1 && 10#$2 <= 65535)) ;;
         target) [[ $2 =~ ^[A-Za-z0-9.-]+$ ]] ;;
+        token) [[ $2 =~ ^[A-Za-z0-9_-]+$ ]] && ((${#2} >= 16 && ${#2} <= 256)) ;;
     esac
 }
 
@@ -167,7 +228,7 @@ current() {
     return 0
 }
 
-# ask KEY DEFAULT QUESTION
+# ask KEY DEFAULT QUESTION EXPLANATION
 ask() {
     local key=$1 default=$2 question=$3 value
     if [[ -n ${given[$key]-} ]]; then
@@ -176,40 +237,48 @@ ask() {
         echo "$value"
         return
     fi
+    if ((interactive)); then
+        printf '\n%s\n' "$4" >&2
+    fi
     while true; do
-        if [[ -t 0 ]]; then
+        value=""
+        if ((interactive)); then
             read -r -p "$question [$default]: " value </dev/tty || value=""
-        else
-            value=""
         fi
         value=${value:-$default}
         if valid "$key" "$value"; then
             echo "$value"
             return
         fi
-        [[ -t 0 ]] || die "'$value' is not a valid $key"
+        ((interactive)) || die "'$value' is not a valid $key"
         warn "'$value' is not a valid $key. Try again."
     done
 }
 
-host_default=$(current host)
-port_default=$(current port)
-target_default=$(current target)
+default_host=$(current host)
+[[ -n $default_host ]] || default_host=$(hostname -s)
+default_port=$(current port)
+default_target=$(current target)
 
-echo
-echo "The host is the SSH host name that your Windows computer uses for this"
-echo "server (the 'Host' line in its ~/.ssh/config). The Windows listener must"
-echo "allow this name (--hosts)."
-host=$(ask host "${host_default:-$(hostname -s)}" "SSH host name of this server")
+host=$(ask host "$default_host" "SSH host name of this server" \
+    "The host is the SSH host name that your local computer uses for this server
+(the 'Host' line in its ~/.ssh/config). The listener must allow this name.")
+port=$(ask port "${default_port:-7682}" "Listener port" \
+    "The port is the port on this server where the SSH RemoteForward listens.")
+target=$(ask target "${default_target:-127.0.0.1}" "Listener address" \
+    "The target is the address of the listener. Use 127.0.0.1 with the SSH RemoteForward.")
 
-echo
-echo "The port is the port on this server where the SSH RemoteForward listens."
-port=$(ask port "${port_default:-7682}" "Listener port")
-
-echo
-echo "The target is the address of the listener. Use 127.0.0.1 with the SSH"
-echo "RemoteForward."
-target=$(ask target "${target_default:-127.0.0.1}" "Listener address")
+token=${given[token]-}
+if [[ -n $token ]]; then
+    valid token "$token" || die "the token is not valid (16 to 256 letters, digits, '_' or '-')"
+elif ((interactive)); then
+    printf '\n%s\n' "If the listener uses a token, paste it here. Press Enter to keep the current value." >&2
+    read -r -s -p "Token [$(if [[ -n $(current token) ]]; then echo "keep current"; else echo "none"; fi)]: " token </dev/tty || token=""
+    echo >&2
+    if [[ -n $token ]] && ! valid token "$token"; then
+        die "the token is not valid (16 to 256 letters, digits, '_' or '-')"
+    fi
+fi
 echo
 
 # --- Install ---
@@ -226,7 +295,9 @@ if ((replace)); then
     info "Installed zed-remote-open $new_version in $DEST"
 fi
 
-"$DEST" -c "host:$host" -c "port:$port" -c "target:$target" >/dev/null
+settings=(-c "host:$host" -c "port:$port" -c "target:$target")
+[[ -z $token ]] || settings+=(-c "token:$token")
+"$DEST" "${settings[@]}" >/dev/null
 info "Saved the settings in $CONFIG_FILE"
 
 # --- Checks ---
@@ -242,15 +313,11 @@ if [[ -n $found && $found != "$DEST" ]]; then
     warn "'zed' in PATH is $found, not $DEST. Put $BIN_DIR before $(dirname -- "$found") in PATH."
 fi
 
-if timeout 3 bash -c "exec 3<>/dev/tcp/$target/$port" 2>/dev/null; then
-    info "The listener at $target:$port is available."
-else
-    warn "Cannot connect to $target:$port now. To fix this:
-    1. Install the listener on Windows (local/local-windows-installer.ps1) and allow the host '$host'.
-    2. Add 'RemoteForward 127.0.0.1:$port 127.0.0.1:<Windows port>' to the '$host' entry of
-       ~/.ssh/config on Windows.
-    3. Close this SSH session and connect again."
-fi
-
 echo
-info "Done. Try: zed .     (help: zed --help)"
+if "$DEST" --doctor; then
+    echo
+    info "Done. Try: zed .     (help: zed --help)"
+else
+    echo
+    warn "zed is installed, but it cannot use the listener now. Read the [fail] line above."
+fi
