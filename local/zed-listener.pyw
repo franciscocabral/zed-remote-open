@@ -298,11 +298,16 @@ def build_commands(cfg: Config, req: Request) -> list[list[str]]:
         if line:
             url += f":{line}" + (f":{column}" if column else "")
         args = [cfg.zed]
-        # "new" only on the first call: the next calls go to the window of the
-        # project. "current" adds no option, and Zed uses the window of the
-        # project if it is open.
-        if req.window == "new" and i == 0:
-            args.append("--new")
+        # The first call opens the project (the Git root): with "new", in a
+        # new window; with "current", Zed uses the window of the project if it
+        # is open. The next calls (the files) use --add: with no option, Zed
+        # opens a single file in a window of its own; --add puts it in the
+        # active window, which is the window of the first call.
+        if i == 0:
+            if req.window == "new":
+                args.append("--new")
+        else:
+            args.append("--add")
         args.append(url)
         commands.append(args)
     return commands

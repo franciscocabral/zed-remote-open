@@ -52,7 +52,8 @@ Terms in this document:
   the Git root of a file).
 - Zed must connect to the server with remote development (`zed ssh://<host>/`).
 - The Zed CLI opens only one `ssh://` URL in each call. The listener runs `zed`
-  one time for each path, in sequence: first the Git root, then the files.
+  one time for each path, in sequence: first the Git root, then the files with
+  `--add` (with no option, Zed opens a single file in a window of its own).
 
 ## Installation
 

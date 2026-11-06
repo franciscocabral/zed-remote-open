@@ -99,7 +99,8 @@ class RemoteZedTest(unittest.TestCase):
         self.assertIn(f"Opening Zed at {self.repo}/sub/c.md:3:7\n", out.stdout)
         r = f"ssh://testhost{self.repo}"
         self.assertEqual(self.new_calls(4),
-                         [[r], [f"{r}/a.md:12"], [f"{r}/sub/c.md:3:7"], [f"{r}/b.md"]])
+                         [[r], ["--add", f"{r}/a.md:12"], ["--add", f"{r}/sub/c.md:3:7"],
+                          ["--add", f"{r}/b.md"]])
 
     def test_file_outside_git(self):
         other = self.home / "notes.txt"
@@ -127,7 +128,7 @@ class RemoteZedTest(unittest.TestCase):
         proc = self.start_wait("a.md")
         # The Git root first: the file opens in the window of the project.
         r = f"ssh://testhost{self.repo}"
-        self.assertEqual(self.new_calls(2), [[r], [f"{r}/a.md"]])
+        self.assertEqual(self.new_calls(2), [[r], ["--add", f"{r}/a.md"]])
         time.sleep(1)
         self.assertIsNone(proc.poll(), "zed -w returned before the save")
         (self.repo / "a.md").write_text("edited\n")  # The user saves in Zed.
@@ -141,7 +142,7 @@ class RemoteZedTest(unittest.TestCase):
         message.write_text("\n")
         proc = self.start_wait(".git/COMMIT_EDITMSG")
         r = f"ssh://testhost{self.repo}"
-        self.assertEqual(self.new_calls(2), [[r], [f"{r}/.git/COMMIT_EDITMSG"]])
+        self.assertEqual(self.new_calls(2), [[r], ["--add", f"{r}/.git/COMMIT_EDITMSG"]])
         time.sleep(1)
         message.write_text("feat: a message\n")
         _, err = proc.communicate(timeout=10)
@@ -160,9 +161,9 @@ class RemoteZedTest(unittest.TestCase):
         self.zed("-c", "window:new")
         self.zed("a.md")
         r = f"ssh://testhost{self.repo}"
-        self.assertEqual(self.new_calls(2), [["--new", r], [f"{r}/a.md"]])
+        self.assertEqual(self.new_calls(2), [["--new", r], ["--add", f"{r}/a.md"]])
         self.zed("-a", "a.md")
-        self.assertEqual(self.new_calls(4)[2:], [[r], [f"{r}/a.md"]])
+        self.assertEqual(self.new_calls(4)[2:], [[r], ["--add", f"{r}/a.md"]])
 
     def test_settings_file_is_private(self):
         self.zed("-c", f"token:{TOKEN}", "-c", "port:7700", "-c", "host:testhost")
