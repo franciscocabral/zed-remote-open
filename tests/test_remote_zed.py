@@ -3,10 +3,12 @@
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -95,10 +97,33 @@ class RemoteZedTest(unittest.TestCase):
         self.assertEqual(path.read_text(), "hello\n")
         self.assertIn(str(path), out.stdout)
 
-    def test_wait_has_no_git_root(self):
-        out = self.zed("-w", "a.md")
+    def start_wait(self, name: str) -> subprocess.Popen:
+        """Starts "zed -w NAME" with no terminal (no /dev/tty: no Enter key)."""
+        proc = subprocess.Popen(["bash", str(ZED_SCRIPT), "-w", name], cwd=self.repo,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=self.env,
+                                start_new_session=True)
+        self.addCleanup(proc.kill)
+        return proc
+
+    def test_wait_ends_at_the_save(self):
+        proc = self.start_wait("a.md")
         self.assertEqual(self.last_call(), ["--wait", f"ssh://testhost{self.repo}/a.md"])
-        self.assertIn("Waiting", out.stdout)
+        time.sleep(1)
+        self.assertIsNone(proc.poll(), "zed -w returned before the save")
+        (self.repo / "a.md").write_text("edited\n")  # The user saves in Zed.
+        out, _ = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn(f"Saved: {self.repo}/a.md", out)
+
+    def test_wait_cancel(self):
+        proc = self.start_wait("b.md")
+        self.last_call()
+        time.sleep(1)
+        proc.send_signal(signal.SIGINT)
+        _, err = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("cancelled", err)
 
     def test_window_setting(self):
         self.zed("-c", "window:new")

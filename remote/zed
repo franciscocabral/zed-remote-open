@@ -27,7 +27,10 @@ With no PATH, it opens the current directory. For a file in a Git
 repository, it also opens the repository root. "-" opens the text from stdin.
 
 Options:
-  -w             Wait until you close the files in Zed (for EDITOR="zed -w").
+  -w             Wait until you save the file in Zed (for EDITOR="zed -w").
+                 Enter in the terminal continues without a save; Ctrl+C
+                 cancels (exit code 1). With Zed autosave, the first
+                 autosave ends the wait.
   -n             Open in a new window.
   -a             Open in the current window (the window of the project, if it
                  is open). This is the default.
@@ -248,7 +251,7 @@ split_position() {
 # --- Actions ---
 
 run_open() {
-    local mode=$1 arg path root used_stdin=0 done_line code
+    local mode=$1 arg path root used_stdin=0
     (($# > 1)) || set -- "$1" .
     shift
 
@@ -293,17 +296,63 @@ run_open() {
         echo "Opening Zed at ${arg#* * }$position"
     done
 
-    if [[ $mode == wait ]]; then
-        echo "Waiting until you close the files in Zed..."
-        IFS= read -r done_line <&3 || done_line=""
-        exec 3<&-
-        done_line=${done_line%$'\r'}
-        [[ $done_line == "DONE "* ]] || die "the connection closed before Zed closed the files"
-        code=${done_line#DONE }
-        [[ $code =~ ^[0-9]+$ ]] || code=1
-        exit "$code"
-    fi
     exec 3<&-
+    if [[ $mode == wait ]]; then
+        wait_for_save
+    fi
+}
+
+# Prints a signature that changes when a file is saved: modification time
+# (with nanoseconds), size and inode (a save can replace the file).
+file_signature() {
+    stat -c '%y %s %i' -- "$1" 2>/dev/null || echo missing
+}
+
+# Waits until one of the files is saved in Zed. The Zed CLI cannot wait until
+# a remote file is closed (--wait returns at once for ssh:// URLs), and the
+# server cannot see when a tab closes. So the save is the signal.
+# Enter in the terminal also ends the wait (exit 0); Ctrl+C cancels (exit 1).
+wait_for_save() {
+    local entry path i changed answer tty_fd=""
+    local -a files=() before=()
+    for entry in "${req_paths[@]}"; do
+        path=${entry#* * }
+        files+=("$path")
+        before+=("$(file_signature "$path")")
+    done
+
+    trap 'echo; warn "cancelled"; exit 1' INT TERM
+    if { exec 4</dev/tty; } 2>/dev/null; then
+        tty_fd=4
+        echo "Save the file in Zed to continue. (Enter: continue without a save. Ctrl+C: cancel.)"
+    else
+        echo "Save the file in Zed to continue. (Ctrl+C: cancel.)"
+    fi
+
+    while true; do
+        if [[ -n $tty_fd ]]; then
+            if IFS= read -r -t 0.3 answer <&4; then
+                exit 0
+            fi
+        else
+            sleep 0.3
+        fi
+        changed=""
+        for i in "${!files[@]}"; do
+            if [[ $(file_signature "${files[i]}") != "${before[i]}" ]]; then
+                changed=${files[i]}
+            fi
+        done
+        [[ -n $changed ]] || continue
+        # Wait until the write is complete: the signature stays the same for 0.3 s.
+        local now later
+        now=$(file_signature "$changed")
+        while sleep 0.3 && later=$(file_signature "$changed") && [[ $later != "$now" ]]; do
+            now=$later
+        done
+        echo "Saved: $changed"
+        exit 0
+    done
 }
 
 latest_release() {

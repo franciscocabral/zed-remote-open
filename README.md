@@ -198,7 +198,7 @@ command | zed [OPTIONS] -
 
 | Option | Description |
 |---|---|
-| `-w` | Wait until you close the files in Zed. Use it for `EDITOR`. |
+| `-w` | Wait until you save the file in Zed. Use it for `EDITOR`. |
 | `-n` | Open in a new window. |
 | `-a` | Open in the current window: Zed uses the window of the project if it is open (default). |
 | `-p PORT` | Port of the listener. |
@@ -224,11 +224,24 @@ command | zed [OPTIONS] -
 
 ```bash
 export EDITOR="zed -w"
-git commit           # Zed opens COMMIT_EDITMSG; git continues when you close it
+git commit           # Zed opens COMMIT_EDITMSG; git continues when you save it
 ```
 
 With `-w`, `zed` sends only the files (not the Git root), and it waits until
-you close them in Zed.
+you **save** one of them in Zed:
+
+| Action | Result |
+|---|---|
+| Save in Zed (Ctrl+S) | `zed -w` ends with exit code 0, and Git continues. |
+| Enter in the terminal | Ends with exit code 0 without a save (for example, to keep the file as it is). |
+| Ctrl+C in the terminal | Ends with exit code 1: Git stops (cancel). |
+
+Why the save and not the close of the tab: the Zed CLI cannot wait for a
+remote file (`zed --wait` ends at once for `ssh://` URLs), and the server
+cannot see when a tab closes.
+
+> If Zed autosave is on (`"autosave": "after_delay"` or `"on_focus_change"`),
+> the first autosave ends the wait.
 
 ### Settings
 
