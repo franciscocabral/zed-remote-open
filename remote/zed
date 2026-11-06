@@ -85,7 +85,7 @@ valid_value() {
         host) [[ $value =~ ^[A-Za-z0-9._-]+$ ]] ;;
         port) [[ $value =~ ^[0-9]{1,5}$ ]] && ((10#$value >= 1 && 10#$value <= 65535)) ;;
         target) [[ $value =~ ^[A-Za-z0-9.-]+$ ]] ;;
-        token) [[ $value =~ ^[A-Za-z0-9_-]{16,256}$ ]] ;;
+        token) [[ $value =~ ^[A-Za-z0-9_-]+$ ]] && ((${#value} >= 16 && ${#value} <= 256)) ;;
         window) [[ $value == current || $value == new ]] ;;
         *) return 1 ;;
     esac

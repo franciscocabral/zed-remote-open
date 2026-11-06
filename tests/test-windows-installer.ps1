@@ -32,7 +32,8 @@ New-Item -ItemType Directory -Force -Path $bin | Out-Null
 Set-Content -Path (Join-Path $bin 'zed.cmd') -Encoding ASCII `
     -Value "@`"$python`" `"$(Join-Path $PSScriptRoot 'fake_zed.py')`" `"$calls`" %*"
 $env:PATH = "$bin;$env:PATH"
-$port = [int](& $python -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+# No double quotes in the Python code: Windows PowerShell 5.1 removes them from native arguments.
+$port = [int](& $python -c 'import socket; s = socket.socket(); s.bind((''127.0.0.1'', 0)); print(s.getsockname()[1])')
 
 try {
     Write-Host '### New installation'

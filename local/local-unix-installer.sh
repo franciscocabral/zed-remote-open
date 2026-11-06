@@ -414,7 +414,10 @@ done
 
 current_token=$(json_get "$CONFIG" token 2>/dev/null || true)
 if [[ -n $opt_token ]]; then
-    [[ $opt_token =~ ^[A-Za-z0-9_-]{16,256}$ ]] || die "the token is not valid (16 to 256 letters, digits, '_' or '-')"
+    # No {16,256} in the regex: macOS allows at most 255 repeats (RE_DUP_MAX).
+    if ! [[ $opt_token =~ ^[A-Za-z0-9_-]+$ ]] || ((${#opt_token} < 16 || ${#opt_token} > 256)); then
+        die "the token is not valid (16 to 256 letters, digits, '_' or '-')"
+    fi
     token=$opt_token
 elif ((no_token)); then
     token=""
