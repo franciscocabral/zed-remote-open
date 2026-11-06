@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# zed-remote-open: opens files and directories of this server in the local Zed.
+#
+# For a file in a Git repository, it also sends the repository root, so Zed
+# opens the project and the file in one window. If a path does not exist, it
+# asks before it creates it.
+#
+# Protocol: one TCP connection, one line "host:/absolute/path" for each path.
+set -euo pipefail
+
+VERSION="1.0.0"
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/zed-remote-open/settings.json"
+KEYS=(host port target)
+
+usage() {
+    cat <<EOF
+Usage: zed [-p PORT] [-h HOST] [-t TARGET] [-c KEY:VALUE]... [PATH...]
+
+Opens each PATH of this server in the Zed editor of your local computer.
+With no PATH, it opens the current directory. For a file in a Git
+repository, it also opens the repository root.
+
+Options:
+  -p PORT        Port of the listener (default: 7682).
+  -h HOST        SSH host name that the local computer uses for this server
+                 (default: $(hostname -s)).
+  -t TARGET      Address of the listener (default: 127.0.0.1).
+  -c KEY:VALUE   Save a value in the settings file. KEY is host, port or
+                 target. An empty VALUE removes the key. You can use -c more
+                 than one time. With -c and no PATH, zed opens nothing.
+  --help         Show this help.
+  --version      Show the version.
+
+Precedence: option > environment variable > settings file > default.
+Environment variables: ZED_SSH_HOST, ZED_LISTENER_PORT, ZED_LISTENER_HOST.
+Settings file: $CONFIG_FILE
+EOF
+}
+
+die() {
+    echo "zed: $*" >&2
+    exit 1
+}
+
+default_value() {
+    case $1 in
+        host) hostname -s ;;
+        port) echo 7682 ;;
+        target) echo 127.0.0.1 ;;
+    esac
+}
+
+env_value() {
+    case $1 in
+        host) echo "${ZED_SSH_HOST-}" ;;
+        port) echo "${ZED_LISTENER_PORT-}" ;;
+        target) echo "${ZED_LISTENER_HOST-}" ;;
+    esac
+}
+
+# Returns 0 if the value is correct for the key.
+valid_value() {
+    local key=$1 value=$2
+    case $key in
+        host) [[ $value =~ ^[A-Za-z0-9._-]+$ ]] ;;
+        port) [[ $value =~ ^[0-9]{1,5}$ ]] && ((10#$value >= 1 && 10#$value <= 65535)) ;;
+        target) [[ $value =~ ^[A-Za-z0-9.-]+$ ]] ;;
+        *) return 1 ;;
+    esac
+}
+
+is_key() {
+    local k
+    for k in "${KEYS[@]}"; do [[ $k == "$1" ]] && return 0; done
+    return 1
+}
+
+# The settings file is a flat JSON object with string or number values.
+declare -A saved=()
+
+read_settings() {
+    [[ -f $CONFIG_FILE ]] || return 0
+    local content key re
+    content=$(<"$CONFIG_FILE")
+    for key in "${KEYS[@]}"; do
+        re="\"$key\"[[:space:]]*:[[:space:]]*(\"([^\"]*)\"|([0-9]+))"
+        if [[ $content =~ $re ]]; then
+            saved[$key]="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+        fi
+    done
+}
+
+write_settings() {
+    local key sep="" tmp
+    mkdir -p -- "$(dirname -- "$CONFIG_FILE")"
+    tmp=$(mktemp "$CONFIG_FILE.XXXXXX")
+    {
+        echo "{"
+        for key in "${KEYS[@]}"; do
+            [[ -n ${saved[$key]-} ]] || continue
+            if [[ $key == port ]]; then
+                printf '%s  "%s": %s' "$sep" "$key" "$((10#${saved[$key]}))"
+            else
+                printf '%s  "%s": "%s"' "$sep" "$key" "${saved[$key]}"
+            fi
+            sep=$',\n'
+        done
+        printf '\n}\n'
+    } >"$tmp"
+    mv -- "$tmp" "$CONFIG_FILE"
+}
+
+# Makes sure that the path exists. Returns 1 if the user does not create it.
+ensure_exists() {
+    local arg=$1 path=$2 answer
+
+    [[ -e $path ]] && return 0
+
+    if [[ ! -t 0 ]]; then
+        echo "zed: '$arg' does not exist" >&2
+        return 1
+    fi
+
+    read -r -p "zed: '$path' does not exist. Create it? [y/N] " answer || answer=""
+    case $answer in
+        [yY] | [yY][eE][sS]) ;;
+        *) return 1 ;;
+    esac
+
+    if [[ $arg == */ ]]; then
+        mkdir -p -- "$path"
+    else
+        mkdir -p -- "$(dirname -- "$path")"
+        touch -- "$path"
+    fi
+}
+
+# --- Options ---
+
+case ${1-} in
+    --help) usage; exit 0 ;;
+    --version) echo "zed-remote-open $VERSION"; exit 0 ;;
+esac
+
+declare -A opt=()
+changes=()
+
+while getopts ":p:h:t:c:" o; do
+    case $o in
+        p) opt[port]=$OPTARG ;;
+        h) opt[host]=$OPTARG ;;
+        t) opt[target]=$OPTARG ;;
+        c) changes+=("$OPTARG") ;;
+        :) die "option -$OPTARG needs a value (see zed --help)" ;;
+        *) die "unknown option -$OPTARG (see zed --help)" ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+read_settings
+
+if ((${#changes[@]} > 0)); then
+    for change in "${changes[@]}"; do
+        [[ $change == *:* ]] || die "-c needs KEY:VALUE, not '$change'"
+        key=${change%%:*}
+        value=${change#*:}
+        is_key "$key" || die "unknown key '$key' (use: ${KEYS[*]})"
+        if [[ -z $value ]]; then
+            unset "saved[$key]"
+            echo "zed: removed '$key' from $CONFIG_FILE"
+        else
+            valid_value "$key" "$value" || die "'$value' is not a valid $key"
+            saved[$key]=$value
+            echo "zed: set $key = $value in $CONFIG_FILE"
+        fi
+    done
+    write_settings
+    (($# > 0)) || exit 0
+fi
+
+declare -A cfg=()
+for key in "${KEYS[@]}"; do
+    value=${opt[$key]-}
+    [[ -n $value ]] || value=$(env_value "$key")
+    [[ -n $value ]] || value=${saved[$key]-}
+    [[ -n $value ]] || value=$(default_value "$key")
+    valid_value "$key" "$value" || die "'$value' is not a valid $key"
+    cfg[$key]=$value
+done
+
+# --- Paths ---
+
+(($# > 0)) || set -- .
+
+paths=()
+declare -A seen=()
+
+add_path() {
+    if [[ -z ${seen[$1]+set} ]]; then
+        seen[$1]=1
+        paths+=("$1")
+    fi
+}
+
+for arg in "$@"; do
+    path=$(realpath -m -- "$arg")
+
+    if [[ $path == *$'\n'* ]]; then
+        echo "zed: skipped '$arg' (the path has a newline)" >&2
+        continue
+    fi
+
+    ensure_exists "$arg" "$path" || continue
+
+    if [[ ! -d $path ]]; then
+        root=$(git -C "$(dirname -- "$path")" rev-parse --show-toplevel 2>/dev/null || true)
+        [[ -n $root ]] && add_path "$root"
+    fi
+    add_path "$path"
+done
+
+((${#paths[@]} > 0)) || die "no path to open"
+
+# One printf = one connection. Bash closes it after the last line.
+if ! printf '%s\n' "${paths[@]/#/${cfg[host]}:}" 2>/dev/null >"/dev/tcp/${cfg[target]}/${cfg[port]}"; then
+    die "cannot connect to the listener at ${cfg[target]}:${cfg[port]}"
+fi
+
+printf 'Opening Zed at %s\n' "${paths[@]}"
