@@ -64,8 +64,12 @@ class RemoteZedTest(unittest.TestCase):
             self.fail(f"zed {args} failed: {out.stderr}")
         return out
 
+    def new_calls(self, count: int) -> list[list[str]]:
+        """The zed calls of this test (one call for each URL, in sequence)."""
+        return self.listener.zed.read(self.calls_before + count)[self.calls_before:]
+
     def last_call(self) -> list[str]:
-        return self.listener.zed.read(self.calls_before + 1)[-1]
+        return self.new_calls(1)[-1]
 
     def test_directory(self):
         self.zed()
@@ -74,8 +78,8 @@ class RemoteZedTest(unittest.TestCase):
     def test_files_with_git_root_and_positions(self):
         self.zed("a.md:12", "sub/c.md:3:7", "b.md", "a.md:12")
         r = f"ssh://testhost{self.repo}"
-        self.assertEqual(self.last_call(),
-                         [r, f"{r}/a.md:12", f"{r}/sub/c.md:3:7", f"{r}/b.md"])
+        self.assertEqual(self.new_calls(4),
+                         [[r], [f"{r}/a.md:12"], [f"{r}/sub/c.md:3:7"], [f"{r}/b.md"]])
 
     def test_file_outside_git(self):
         other = self.home / "notes.txt"
@@ -98,9 +102,10 @@ class RemoteZedTest(unittest.TestCase):
     def test_window_setting(self):
         self.zed("-c", "window:new")
         self.zed("a.md")
-        self.assertEqual(self.last_call()[0], "--new")
+        r = f"ssh://testhost{self.repo}"
+        self.assertEqual(self.new_calls(2), [["--new", r], [f"{r}/a.md"]])
         self.zed("-a", "a.md")
-        self.assertNotIn("--new", self.listener.zed.read(self.calls_before + 2)[-1])
+        self.assertEqual(self.new_calls(4)[2:], [[r], [f"{r}/a.md"]])
 
     def test_settings_file_is_private(self):
         self.zed("-c", f"token:{TOKEN}", "-c", "port:7700", "-c", "host:testhost")

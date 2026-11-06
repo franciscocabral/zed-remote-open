@@ -59,14 +59,21 @@ class BuildCommandTest(unittest.TestCase):
     def test_urls_and_options(self):
         req = zl.Request("srv", "wait", "new", None,
                          [(0, 0, "/r"), (5, 0, "/r/a b.ts"), (5, 2, "/r/x:1")])
-        self.assertEqual(zl.build_command(config(), req), [
-            "zed", "--wait", "--new", "ssh://srv/r", "ssh://srv/r/a%20b.ts:5",
-            "ssh://srv/r/x%3A1:5:2",
+        # One call for each URL; --new only on the first call.
+        self.assertEqual(zl.build_commands(config(), req), [
+            ["zed", "--wait", "--new", "ssh://srv/r"],
+            ["zed", "--wait", "ssh://srv/r/a%20b.ts:5"],
+            ["zed", "--wait", "ssh://srv/r/x%3A1:5:2"],
         ])
 
     def test_current_window(self):
         req = zl.Request("srv", "open", "current", None, [(0, 0, "/r")])
-        self.assertEqual(zl.build_command(config(), req), ["zed", "ssh://srv/r"])
+        self.assertEqual(zl.build_commands(config(), req), [["zed", "ssh://srv/r"]])
+
+    def test_too_many_paths(self):
+        lines = ["zro 2", "host srv"] + [f"path 0 0 /p{i}" for i in range(101)]
+        with self.assertRaisesRegex(zl.BadRequest, "more than 100 paths"):
+            zl.parse_request(lines, config())
 
 
 class LoadConfigTest(unittest.TestCase):

@@ -23,7 +23,7 @@ Server: ~/.local/bin/zed (Bash)
 127.0.0.1:<port> on the server ──SSH RemoteForward──▶ 127.0.0.1:<port> on the local computer
   ▼
 Local computer: zed-listener.pyw (Python, starts at login)
-  │  runs: zed ssh://host/<path> ...
+  │  runs: zed ssh://host/<path>  (one call for each path: the project, then its files)
   ▼
 Zed opens the remote project (Zed remote development over SSH)
 ```
@@ -49,6 +49,8 @@ Terms in this document:
 - **Server:** Linux, Bash 4 or later, `curl`, and `git` (optional, to find
   the Git root of a file).
 - Zed must connect to the server with remote development (`zed ssh://<host>/`).
+- The Zed CLI opens only one `ssh://` URL in each call. The listener runs `zed`
+  one time for each path, in sequence: first the Git root, then the files.
 
 ## Installation
 

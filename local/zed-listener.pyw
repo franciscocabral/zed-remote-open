@@ -15,6 +15,9 @@ Protocol "zro 2". One TCP connection on 127.0.0.1 = one request:
 
 The listener sends one response line: "OK <version>" or "ERR <message>".
 For mode "wait", it sends "DONE <exit code>" when Zed closes the files.
+
+The Zed CLI opens only one ssh:// URL in each call, so the listener runs zed
+one time for each path, in sequence (the project before its files).
 """
 
 import argparse
@@ -42,6 +45,8 @@ DEFAULT_PORT = 7682
 MAX_REQUEST_BYTES = 64 * 1024
 REQUEST_TIMEOUT = 5.0  # seconds, for the full request
 MAX_CLIENTS = 16
+MAX_PATHS = 100
+ZED_CALL_TIMEOUT = 60.0  # seconds for one zed call before the next one starts
 HOST_RE = re.compile(r"[A-Za-z0-9._-]+")
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,256}")
 PATH_RE = re.compile(r"(\d{1,9}) (\d{1,9}) (/.*)")
@@ -192,25 +197,31 @@ def parse_request(lines: list[str], cfg: Config) -> Request:
         raise BadRequest(f"invalid window {req.window!r}")
     if req.mode != "ping" and not paths:
         raise BadRequest("no path")
+    if len(paths) > MAX_PATHS:
+        raise BadRequest(f"more than {MAX_PATHS} paths")
     return req
 
 
-def build_command(cfg: Config, req: Request) -> list[str]:
-    """Returns the zed command line. The user cannot add other options."""
-    args = [cfg.zed]
-    if req.mode == "wait":
-        args.append("--wait")
-    # "current" adds no option: the Zed CLI refuses --add with ssh:// URLs
-    # ("cannot open both local and ssh paths"). Zed then reuses the window of
-    # the project if it is open.
-    if req.window == "new":
-        args.append("--new")
-    for line, column, path in req.paths:
+def build_commands(cfg: Config, req: Request) -> list[list[str]]:
+    """Returns one zed command line for each path. The Zed CLI opens only one
+    ssh:// URL in each call: with two, it stops with "cannot open both local
+    and ssh paths". The user cannot add other options."""
+    commands = []
+    for i, (line, column, path) in enumerate(req.paths):
         url = f"ssh://{req.host}{quote(path)}"
         if line:
             url += f":{line}" + (f":{column}" if column else "")
+        args = [cfg.zed]
+        if req.mode == "wait":
+            args.append("--wait")
+        # "new" only on the first call: the next calls go to the window of the
+        # project. "current" adds no option, and Zed uses the window of the
+        # project if it is open.
+        if req.window == "new" and i == 0:
+            args.append("--new")
         args.append(url)
-    return args
+        commands.append(args)
+    return commands
 
 
 def redact(lines: list[str]) -> list[str]:
@@ -239,48 +250,79 @@ def handle(conn: socket.socket, cfg: Config) -> None:
         send(conn, f"OK {__version__}")
         return
 
-    args = build_command(cfg, req)
-    logging.info("Running %s", " ".join(args))
-    # The output goes to a temporary file, not to a pipe: the Zed application
-    # that the CLI starts can keep a pipe open, and the listener would wait.
-    output = tempfile.TemporaryFile()
+    commands = build_commands(cfg, req)
     try:
-        proc = subprocess.Popen(
-            args,
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=subprocess.STDOUT,
-            creationflags=NO_WINDOW,
-        )
+        if req.mode == "wait":
+            # Wait mode has no Git root: all files open at the same time.
+            procs = [ZedProcess(args) for args in commands]
+        else:
+            procs = [ZedProcess(commands[0])]
     except OSError as e:
-        output.close()
         logging.error("Cannot run %s: %s", cfg.zed, e)
         send(conn, f"ERR cannot run zed: {e}")
         return
     send(conn, f"OK {__version__}")
     if req.mode == "wait":
         conn.settimeout(None)
-        code = wait_for_zed(proc, output)
-        send(conn, f"DONE {code}")
+        codes = [p.wait() for p in procs]
+        send(conn, f"DONE {max(codes)}")
     else:
-        threading.Thread(target=wait_for_zed, args=(proc, output), daemon=True).start()
+        threading.Thread(target=run_in_sequence, args=(procs[0], commands[1:]),
+                         daemon=True).start()
 
 
-def wait_for_zed(proc: subprocess.Popen, output) -> int:
-    """Waits for the zed command and writes its exit code and output to the log."""
-    code = proc.wait()
-    try:
-        output.seek(0)
-        text = output.read(4000).decode("utf-8", errors="replace").strip()
-    except OSError:
-        text = ""
-    finally:
-        output.close()
-    if code:
-        logging.warning("zed exit code %d. Output: %s", code, text or "(none)")
-    else:
-        logging.info("zed exit code 0%s", f". Output: {text}" if text else "")
-    return code
+def run_in_sequence(first: "ZedProcess", rest: list[list[str]]) -> None:
+    """Runs the next zed command after the one before it ends, so that the
+    project window exists before its files open."""
+    first.wait(ZED_CALL_TIMEOUT)
+    for args in rest:
+        try:
+            ZedProcess(args).wait(ZED_CALL_TIMEOUT)
+        except OSError as e:
+            logging.error("Cannot run %s: %s", args[0], e)
+            return
+
+
+class ZedProcess:
+    """A running zed command. Its output goes to a temporary file, not to a
+    pipe: the Zed application that the CLI starts can keep a pipe open, and
+    the listener would wait for it."""
+
+    def __init__(self, args: list[str]):
+        logging.info("Running %s", " ".join(args))
+        self.output = tempfile.TemporaryFile()
+        try:
+            self.proc = subprocess.Popen(
+                args,
+                stdin=subprocess.DEVNULL,
+                stdout=self.output,
+                stderr=subprocess.STDOUT,
+                creationflags=NO_WINDOW,
+            )
+        except OSError:
+            self.output.close()
+            raise
+
+    def wait(self, timeout: float | None = None) -> int:
+        """Waits for the command and writes its exit code and output to the log."""
+        try:
+            code = self.proc.wait(timeout)
+        except subprocess.TimeoutExpired:
+            logging.warning("zed did not end in %d seconds; the next call starts", timeout)
+            threading.Thread(target=self.wait, daemon=True).start()
+            return 0
+        try:
+            self.output.seek(0)
+            text = self.output.read(4000).decode("utf-8", errors="replace").strip()
+        except OSError:
+            text = ""
+        finally:
+            self.output.close()
+        if code:
+            logging.warning("zed exit code %d. Output: %s", code, text or "(none)")
+        else:
+            logging.info("zed exit code 0%s", f". Output: {text}" if text else "")
+        return code
 
 
 def close_gracefully(conn: socket.socket) -> None:
