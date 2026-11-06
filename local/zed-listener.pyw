@@ -200,7 +200,11 @@ def build_command(cfg: Config, req: Request) -> list[str]:
     args = [cfg.zed]
     if req.mode == "wait":
         args.append("--wait")
-    args.append("--new" if req.window == "new" else "--add")
+    # "current" adds no option: the Zed CLI refuses --add with ssh:// URLs
+    # ("cannot open both local and ssh paths"). Zed then reuses the window of
+    # the project if it is open.
+    if req.window == "new":
+        args.append("--new")
     for line, column, path in req.paths:
         url = f"ssh://{req.host}{quote(path)}"
         if line:

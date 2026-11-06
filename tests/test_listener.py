@@ -66,7 +66,7 @@ class BuildCommandTest(unittest.TestCase):
 
     def test_current_window(self):
         req = zl.Request("srv", "open", "current", None, [(0, 0, "/r")])
-        self.assertEqual(zl.build_command(config(), req), ["zed", "--add", "ssh://srv/r"])
+        self.assertEqual(zl.build_command(config(), req), ["zed", "ssh://srv/r"])
 
 
 class LoadConfigTest(unittest.TestCase):
@@ -108,7 +108,7 @@ class ListenerProcessTest(unittest.TestCase):
         out = send(port, request("testhost", "wait", TOKEN, [(3, 0, "/tmp/a")]), wait_done=True)
         self.assertEqual(out, [f"OK {zl.__version__}", "DONE 0"])
         calls = self.listener.zed.read(1)
-        self.assertEqual(calls[-1], ["--wait", "--add", "ssh://testhost/tmp/a:3"])
+        self.assertEqual(calls[-1], ["--wait", "ssh://testhost/tmp/a:3"])
 
     def test_rejected(self):
         out = send(self.listener.port, request("testhost", token="wrong-token-123456"))

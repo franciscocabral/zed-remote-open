@@ -23,7 +23,7 @@ Server: ~/.local/bin/zed (Bash)
 127.0.0.1:<port> on the server ──SSH RemoteForward──▶ 127.0.0.1:<port> on the local computer
   ▼
 Local computer: zed-listener.pyw (Python, starts at login)
-  │  runs: zed --add ssh://host/<path> ...
+  │  runs: zed ssh://host/<path> ...
   ▼
 Zed opens the remote project (Zed remote development over SSH)
 ```
@@ -198,7 +198,7 @@ command | zed [OPTIONS] -
 |---|---|
 | `-w` | Wait until you close the files in Zed. Use it for `EDITOR`. |
 | `-n` | Open in a new window. |
-| `-a` | Open in the current window. |
+| `-a` | Open in the current window: Zed uses the window of the project if it is open (default). |
 | `-p PORT` | Port of the listener. |
 | `-h HOST` | SSH host name of this server. |
 | `-t TARGET` | Address of the listener. |
@@ -248,7 +248,7 @@ File: `~/.config/zed-remote-open/settings.json` (mode `600`)
 | `port` | 1 to 65535 (default `7682`) | `ZED_LISTENER_PORT` |
 | `target` | address of the listener (default `127.0.0.1`) | `ZED_LISTENER_HOST` |
 | `token` | the token of the listener | `ZED_LISTENER_TOKEN` |
-| `window` | `current` (default) or `new` | `ZED_WINDOW` |
+| `window` | `current` (default: the window of the project if it is open) or `new` | `ZED_WINDOW` |
 
 Precedence: option > environment variable > settings file > default value.
 

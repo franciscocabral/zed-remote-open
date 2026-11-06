@@ -54,7 +54,7 @@ try {
     Test-Condition ($response -like 'OK *') "the listener accepts the request ($response)"
     Start-Sleep -Seconds 2
     $last = (Get-Content $calls | Select-Object -Last 1)
-    Test-Condition ($last -eq '["--add", "ssh://testhost/srv/a.md:3"]') "zed gets the correct arguments ($last)"
+    Test-Condition ($last -eq '["ssh://testhost/srv/a.md:3"]') "zed gets the correct arguments ($last)"
 
     Write-Host '### Same version again'
     $out = Invoke-Installer @('-Yes', '-Port', "$port", '-Hosts', 'testhost,testhost.ts')

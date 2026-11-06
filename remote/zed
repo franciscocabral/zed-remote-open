@@ -29,7 +29,8 @@ repository, it also opens the repository root. "-" opens the text from stdin.
 Options:
   -w             Wait until you close the files in Zed (for EDITOR="zed -w").
   -n             Open in a new window.
-  -a             Open in the current window.
+  -a             Open in the current window (the window of the project, if it
+                 is open). This is the default.
   -p PORT        Port of the listener.
   -h HOST        SSH host name that the local computer uses for this server.
   -t TARGET      Address of the listener.
