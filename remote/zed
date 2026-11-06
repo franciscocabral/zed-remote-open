@@ -284,8 +284,13 @@ run_open() {
         *) die "unexpected response from the listener: $response" ;;
     esac
 
+    local line col position
     for arg in "${req_paths[@]}"; do
-        echo "Opening Zed at ${arg#* * }"
+        read -r line col _ <<<"$arg"
+        position=""
+        if ((line > 0)); then position=":$line"; fi
+        if ((col > 0)); then position="$position:$col"; fi
+        echo "Opening Zed at ${arg#* * }$position"
     done
 
     if [[ $mode == wait ]]; then

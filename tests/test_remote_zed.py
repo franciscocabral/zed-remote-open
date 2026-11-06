@@ -76,7 +76,8 @@ class RemoteZedTest(unittest.TestCase):
         self.assertEqual(self.last_call(), [f"ssh://testhost{self.repo}"])
 
     def test_files_with_git_root_and_positions(self):
-        self.zed("a.md:12", "sub/c.md:3:7", "b.md", "a.md:12")
+        out = self.zed("a.md:12", "sub/c.md:3:7", "b.md", "a.md:12")
+        self.assertIn(f"Opening Zed at {self.repo}/sub/c.md:3:7\n", out.stdout)
         r = f"ssh://testhost{self.repo}"
         self.assertEqual(self.new_calls(4),
                          [[r], [f"{r}/a.md:12"], [f"{r}/sub/c.md:3:7"], [f"{r}/b.md"]])
