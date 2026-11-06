@@ -39,6 +39,7 @@ param(
     [switch]$Force,
     [switch]$SkipSshConfig,
     [switch]$NoAutostart,
+    [Alias('y')]
     [switch]$Yes,
     [switch]$Uninstall,
     [ValidateSet('managed', 'config')]

@@ -110,7 +110,7 @@ Options (Windows / macOS and Linux):
 | `-Token T` | `-k T` | Use this token. |
 | `-NoToken` | `-K` | Use no token. |
 | `-PythonW PATH` | `-P PATH` | Python to use. |
-| `-Yes` | `-y` | Ask no questions: answer yes and use the default values. |
+| `-Yes` or `-y` | `-y` | Ask no questions: use the current or default values, and answer yes. |
 | `-Tunnel managed` | `-T managed` | Managed SSH tunnel (see step 2). |
 | `-Tunnel config` | `-T config` | `RemoteForward` in `~/.ssh/config` (see step 2). |
 | `-WaitClose` | `-W` | Experimental: `zed -w` also ends when you close the tab (see [Wait mode](#use-zed-as-the-editor-of-the-server)). |
