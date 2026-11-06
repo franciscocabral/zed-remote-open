@@ -21,7 +21,11 @@ jobs:
       - name: ShellCheck
         run: shellcheck remote/zed remote/*.sh local/*.sh scripts/*.sh tests/*.sh
       - name: Ruff
-        run: pipx run ruff==0.6.9 check local/zed-listener.pyw tests
+        run: pipx run ruff==0.6.9 check local/zed-listener.pyw tests scripts
+      - name: Packages (Homebrew formula and Scoop manifest)
+        run: |
+          ruby -c Formula/zed-remote-open.rb
+          python3 -m json.tool bucket/zed-remote-open.json >/dev/null
       - name: PSScriptAnalyzer
         shell: pwsh
         run: |
@@ -93,9 +97,11 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           scripts/set-version.sh "$VERSION"
+          python3 scripts/update-packages.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore(release): v$VERSION [skip ci]"
+          git add VERSION SHA256SUMS README.md remote local Formula bucket
+          git commit -m "chore(release): v$VERSION [skip ci]"
           git tag -a "v$VERSION" -m "v$VERSION"
           git push origin HEAD:main
           git push origin "v$VERSION"
@@ -107,5 +113,6 @@ jobs:
         run: |
           files=(remote/zed remote/remote-linux-installer.sh local/zed-listener.pyw
                  local/local-windows-installer.ps1 local/local-unix-installer.sh)
-          sha256sum "${files[@]}" | sed 's#  .*/#  #' >SHA256SUMS
-          gh release create "v$VERSION" --title "v$VERSION" --generate-notes "${files[@]}" SHA256SUMS
+          mkdir -p dist
+          sha256sum "${files[@]}" | sed 's#  .*/#  #' >dist/SHA256SUMS
+          gh release create "v$VERSION" --title "v$VERSION" --generate-notes "${files[@]}" dist/SHA256SUMS
