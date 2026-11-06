@@ -21,6 +21,8 @@ usage() {
     cat <<EOF
 Usage: zed [OPTIONS] [PATH[:LINE[:COLUMN]]...]
        command | zed [OPTIONS] -
+       zed --browse URL          (or: zed-browse URL; for BROWSER=zed-browse)
+       zed --notify [MESSAGE]    (no MESSAGE: the text from stdin)
 
 Opens each PATH of this server in the Zed editor of your local computer.
 With no PATH, it opens the current directory. For a file in a Git
@@ -40,6 +42,12 @@ Options:
   -c KEY:VALUE   Save a value in the settings file. KEY is one of:
                  ${KEYS[*]}. An empty VALUE removes the key. You can use -c
                  more than one time. With -c and no PATH, zed opens nothing.
+  --browse URL   Open an http:// or https:// URL in the browser of the local
+                 computer.
+  --notify       Show a notification on the local computer.
+  --completion bash|zsh
+                 Print the shell completion. For example, in ~/.zshrc (after
+                 compinit): eval "\$(zed --completion zsh)"
   --doctor       Check the settings and the connection to the listener.
   --update       Install the latest release of zed.
   --uninstall    Remove zed and its settings from this server.
@@ -159,7 +167,11 @@ resolve_settings() {
 request() {
     local mode=$1 line
     if ! { exec 3<>"/dev/tcp/${cfg[target]}/${cfg[port]}"; } 2>/dev/null; then
-        response="ERR cannot connect to the listener at ${cfg[target]}:${cfg[port]}"
+        if [[ ${cfg[target]} == 127.0.0.1 || ${cfg[target]} == localhost ]]; then
+            response="ERR cannot connect to ${cfg[target]}:${cfg[port]}: nothing listens on this port of the server, so no SSH tunnel forwards it (start the listener on the local computer, or connect again with ssh)"
+        else
+            response="ERR cannot connect to the listener at ${cfg[target]}:${cfg[port]}"
+        fi
         return 0
     fi
     {
@@ -169,10 +181,11 @@ request() {
         echo "mode $mode"
         echo "window ${cfg[window]}"
         for line in "${req_paths[@]+"${req_paths[@]}"}"; do echo "path $line"; done
+        for line in "${req_extra[@]+"${req_extra[@]}"}"; do echo "$line"; done
         echo "end"
     } >&3
     if ! IFS= read -r -t "$RESPONSE_TIMEOUT" response <&3; then
-        response="ERR no response from the listener at ${cfg[target]}:${cfg[port]}"
+        response="ERR no response from the listener at ${cfg[target]}:${cfg[port]} (the SSH tunnel works, but the listener on the local computer does not answer)"
     fi
     response=${response%$'\r'}
 }
@@ -190,6 +203,7 @@ version_hint() {
 # --- Paths ---
 
 req_paths=()
+req_extra=()
 declare -A seen=()
 
 add_path() { # LINE COLUMN PATH
@@ -296,10 +310,17 @@ run_open() {
         echo "Opening Zed at ${arg#* * }$position"
     done
 
-    exec 3<&-
     if [[ $mode == wait ]]; then
-        wait_for_save
+        local wait_line=""
+        IFS= read -r -t "$RESPONSE_TIMEOUT" wait_line <&3 || wait_line=""
+        if [[ ${wait_line%$'\r'} == "WAIT close" ]]; then
+            wait_for_save 1
+        else
+            exec 3<&-
+            wait_for_save 0
+        fi
     fi
+    exec 3<&-
 }
 
 # Prints a signature that changes when a file is saved: modification time
@@ -313,7 +334,7 @@ file_signature() {
 # server cannot see when a tab closes. So the save is the signal.
 # Enter in the terminal also ends the wait (exit 0); Ctrl+C cancels (exit 1).
 wait_for_save() {
-    local entry path i changed answer tty_fd=""
+    local close_mode=$1 entry path i changed answer line tty_fd="" what="Save the file"
     local -a files=() before=()
     for entry in "${req_paths[@]}"; do
         path=${entry#* * }
@@ -322,14 +343,28 @@ wait_for_save() {
     done
 
     trap 'echo; warn "cancelled"; exit 1' INT TERM
+    if ((close_mode)); then what="Close the tab or save the file"; fi
     if { exec 4</dev/tty; } 2>/dev/null; then
         tty_fd=4
-        echo "Save the file in Zed to continue. (Enter: continue without a save. Ctrl+C: cancel.)"
+        echo "$what in Zed to continue. (Enter: continue without a save. Ctrl+C: cancel.)"
     else
-        echo "Save the file in Zed to continue. (Ctrl+C: cancel.)"
+        echo "$what in Zed to continue. (Ctrl+C: cancel.)"
     fi
 
     while true; do
+        # The listener reports when the tabs close (experimental "wait_close").
+        if ((close_mode)) && read -r -t 0 -u 3; then
+            if IFS= read -r line <&3; then
+                case ${line%$'\r'} in
+                    "DONE "*) echo "Closed in Zed." && exit 0 ;;
+                    "WAIT save")
+                        close_mode=0
+                        warn "the listener cannot see the tabs of this file; save it to continue" ;;
+                esac
+            else
+                close_mode=0
+            fi
+        fi
         if [[ -n $tty_fd ]]; then
             if IFS= read -r -t 0.3 answer <&4; then
                 exit 0
@@ -353,6 +388,93 @@ wait_for_save() {
         echo "Saved: $changed"
         exit 0
     done
+}
+
+run_browse() {
+    (($# == 1)) || die "--browse needs one URL"
+    local url=$1
+    [[ $url =~ ^https?://[^[:space:][:cntrl:]]+$ ]] || die "'$url' is not an http:// or https:// URL"
+    ((${#url} <= 4096)) || die "the URL is too long"
+    req_extra=("url $url")
+    request browse
+    exec 3<&- 2>/dev/null || true
+    case $response in
+        "OK "*) echo "Opening the URL in the browser of the local computer: $url" ;;
+        "ERR "*) die "${response#ERR }" ;;
+        *) die "unexpected response from the listener: $response" ;;
+    esac
+}
+
+run_notify() {
+    local message="$*"
+    if [[ -z $message && ! -t 0 ]]; then
+        message=$(head -c 4000)
+    fi
+    # One line, no control characters, at most 1000 characters.
+    message=$(printf '%s' "$message" | tr '\000-\037\177' ' ' | sed 's/  */ /g; s/^ //; s/ $//')
+    message=${message:0:1000}
+    [[ -n $message ]] || die "--notify needs a message (as arguments or on stdin)"
+    req_extra=("message $message")
+    request notify
+    exec 3<&- 2>/dev/null || true
+    case $response in
+        "OK "*) ;;
+        "ERR "*) die "${response#ERR }" ;;
+        *) die "unexpected response from the listener: $response" ;;
+    esac
+}
+
+run_completion() {
+    case ${1-} in
+        bash)
+            cat <<'EOF'
+_zed_remote_open() {
+    local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+    case $prev in
+        -c)
+            COMPREPLY=($(compgen -W "host: port: target: token: window:current window:new" -- "$cur"))
+            compopt -o nospace 2>/dev/null
+            return ;;
+        -p | -h | -t | --browse | --notify) return ;;
+        --completion) COMPREPLY=($(compgen -W "bash zsh" -- "$cur")); return ;;
+    esac
+    if [[ $cur == -* ]]; then
+        COMPREPLY=($(compgen -W "-w -n -a -p -h -t -c --browse --notify --doctor --update
+            --uninstall --completion --help --version" -- "$cur"))
+        return
+    fi
+    compopt -o default 2>/dev/null
+    COMPREPLY=()
+}
+complete -F _zed_remote_open zed
+EOF
+            ;;
+        zsh)
+            cat <<'EOF'
+_zed_remote_open() {
+    _arguments -s -S \
+        '-w[wait until the file is saved in Zed]' \
+        '-n[open in a new window]' \
+        '-a[open in the current window]' \
+        '-p[port of the listener]:port:' \
+        '-h[SSH host name of this server]:host:' \
+        '-t[address of the listener]:address:' \
+        '*-c[save a setting]:setting:(host\: port\: target\: token\: window\:current window\:new)' \
+        '(- *)--browse[open a URL in the local browser]:url:' \
+        '(- *)--notify[show a notification on the local computer]:message:' \
+        '(- *)--doctor[check the settings and the listener]' \
+        '(- *)--update[install the latest release]' \
+        '(- *)--uninstall[remove zed from this server]' \
+        '(- *)--completion[print the shell completion]:shell:(bash zsh)' \
+        '(- *)--help[show the help]' \
+        '(- *)--version[show the version]' \
+        '*:file:_files'
+}
+compdef _zed_remote_open zed
+EOF
+            ;;
+        *) die "--completion needs 'bash' or 'zsh'" ;;
+    esac
 }
 
 latest_release() {
@@ -408,7 +530,9 @@ run_doctor() {
             status=1
             echo "  [fail] ${response#ERR }"
             echo "         - Is the listener running on the local computer?"
-            echo "         - Does ~/.ssh/config on the local computer forward the port"
+            echo "         - Managed tunnel: read tunnel-<host>.log next to listener.log on the"
+            echo "           local computer (SSH key authentication is necessary)."
+            echo "         - RemoteForward in ~/.ssh/config: does it forward the port"
             echo "           (RemoteForward 127.0.0.1:${cfg[port]} 127.0.0.1:<local port>)?"
             echo "           Connect again after a change."
             echo "         - Are the host and the token the same as in the listener settings?"
@@ -431,9 +555,16 @@ run_update() {
     local tmp
     tmp=$(mktemp)
     trap 'rm -f -- "$tmp"' EXIT
+    local base="https://github.com/$REPO/releases/latest/download" expected actual
     echo "Downloading the latest installer..."
-    curl -fsSL "https://github.com/$REPO/releases/latest/download/remote-linux-installer.sh" -o "$tmp" ||
-        die "cannot download the installer"
+    curl -fsSL "$base/remote-linux-installer.sh" -o "$tmp" || die "cannot download the installer"
+    # The release has SHA256SUMS: a damaged or changed installer does not run.
+    expected=$(curl -fsSL "$base/SHA256SUMS" 2>/dev/null |
+        awk '$2 == "remote-linux-installer.sh" { print $1 }' | head -n 1) || expected=""
+    actual=$(sha256sum <"$tmp" | cut -d' ' -f1)
+    [[ -n $expected ]] || die "cannot get the checksum of the installer from $base/SHA256SUMS"
+    [[ $expected == "$actual" ]] || die "the checksum of the downloaded installer is not correct"
+    echo "Checksum of the installer: correct"
     bash "$tmp" -y
 }
 
@@ -457,6 +588,8 @@ run_uninstall() {
 action=open
 args=()
 end_of_options=0
+# "zed-browse URL" (a link to zed) is the same as "zed --browse URL".
+if [[ $(basename -- "$0") == zed-browse ]]; then action=browse end_of_options=1; fi
 for arg in "$@"; do
     if ((end_of_options)); then
         args+=("$arg")
@@ -466,7 +599,7 @@ for arg in "$@"; do
         --) end_of_options=1 args+=("$arg") ;;
         --help) usage && exit 0 ;;
         --version) echo "zed-remote-open $VERSION" && exit 0 ;;
-        --doctor | --update | --uninstall) action=${arg#--} ;;
+        --doctor | --update | --uninstall | --browse | --notify | --completion) action=${arg#--} ;;
         --*) die "unknown option $arg (see zed --help)" ;;
         *) args+=("$arg") ;;
     esac
@@ -517,6 +650,9 @@ fi
 case $action in
     update) run_update ;;
     uninstall) run_uninstall ;;
+    completion) run_completion "$@" ;;
     doctor) resolve_settings && run_doctor ;;
+    browse) resolve_settings && run_browse "$@" ;;
+    notify) resolve_settings && run_notify "$@" ;;
     open) resolve_settings && run_open "$mode" "$@" ;;
 esac
