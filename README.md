@@ -530,7 +530,8 @@ The managed tunnel needs SSH key authentication. Make sure that
 
 Use [Conventional Commits](https://www.conventionalcommits.org/): the type of
 each commit gives the next version. Make a branch and a pull request; CI runs
-on each push.
+on each push, except when all the changed files are documentation (`*.md`
+and `LICENSE`).
 
 **Tests and lint:**
 
@@ -549,7 +550,9 @@ ruff check local/zed-listener.pyw tests scripts
 the URL of the commit: `ZED_REMOTE_OPEN_URL=https://github.com/franciscocabral/zed-remote-open/raw/<commit>`
 or `-BaseUrl` (add `-f` / `-Force` if the version is the same).
 
-**CI and releases** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+**CI and releases** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+A push or pull request with only documentation changes (`*.md`, `LICENSE`)
+starts no CI run and makes no release.
 
 - **lint:** ShellCheck, Ruff, PSScriptAnalyzer, the syntax of the formula and
   the manifest, and a check that all version lines are the same.
