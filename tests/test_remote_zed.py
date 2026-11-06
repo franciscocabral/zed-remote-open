@@ -212,6 +212,26 @@ class RemoteZedTest(unittest.TestCase):
                 if shutil.which(shell):
                     subprocess.run([shell, "-n"], input=out, text=True, check=True)
 
+    @unittest.skipUnless(
+        subprocess.run(["script", "--version"], capture_output=True).returncode == 0
+        if shutil.which("script") else False, "needs the script command of util-linux")
+    def test_uninstall_removes_the_browse_link(self):
+        """zed --uninstall (it needs a terminal: "script" gives it one)."""
+        bin_dir = self.home / ".local" / "bin"
+        bin_dir.mkdir(parents=True)
+        installed = bin_dir / "zed"
+        installed.write_text(ZED_SCRIPT.read_text())
+        installed.chmod(0o755)
+        (bin_dir / "zed-browse").symlink_to("zed")
+        self.zed("-c", "port:7700")
+        out = subprocess.run(["script", "-qec", f"{installed} --uninstall", "/dev/null"],
+                             input="y\n", capture_output=True, text=True, env=self.env,
+                             timeout=30)
+        self.assertIn("Removed.", out.stdout)
+        self.assertFalse(installed.exists())
+        self.assertFalse((bin_dir / "zed-browse").is_symlink())
+        self.assertFalse((self.home / ".config" / "zed-remote-open").exists())
+
     def test_version(self):
         self.assertEqual(self.zed("--version").stdout.strip(), f"zed-remote-open {VERSION}")
 
