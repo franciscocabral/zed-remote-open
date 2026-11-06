@@ -258,10 +258,28 @@ def handle(conn: socket.socket, cfg: Config) -> None:
         threading.Thread(target=proc.wait, daemon=True).start()  # No zombie process.
 
 
+def close_gracefully(conn: socket.socket) -> None:
+    """Closes without a TCP reset. If unread data stays in the receive buffer
+    (for example after "request is too large"), close() sends a reset, and on
+    Windows the client can lose the response line before it reads it."""
+    try:
+        conn.shutdown(socket.SHUT_WR)
+        conn.settimeout(0.5)
+        drained = 0
+        while drained < 4 * MAX_REQUEST_BYTES:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            drained += len(chunk)
+    except OSError:
+        pass
+
+
 def serve(conn: socket.socket, cfg: Config, slots: threading.BoundedSemaphore) -> None:
     try:
         with conn:
             handle(conn, cfg)
+            close_gracefully(conn)
     except Exception:
         logging.exception("Request failed")
     finally:
