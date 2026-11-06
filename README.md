@@ -12,6 +12,8 @@ zed src/app.ts:42:5       # open a file at line 42, column 5
 zed a.ts b.ts             # open more than one file
 git diff | zed -          # open the text from stdin
 git config --global core.editor "zed -w"   # use Zed for git commit, rebase -i, ...
+export BROWSER=zed-browse # URLs of the server (gh auth login, ...) open in the local browser
+make && zed --notify "build finished"      # a notification on the local computer
 ```
 
 ## How it works
@@ -60,6 +62,9 @@ version. To install the latest release, use the URLs in
 
 ### 1. Local computer
 
+You can install with a package manager (see [Package managers](#package-managers))
+or with the installer script.
+
 **Windows**, in PowerShell:
 
 ```powershell
@@ -88,8 +93,12 @@ The installer:
    - Windows: shortcut `zed-listener.lnk` in the Startup folder
    - macOS: launch agent `~/Library/LaunchAgents/io.github.franciscocabral.zed-remote-open.plist`
    - Linux: `~/.config/autostart/zed-remote-open.desktop`
-6. Adds the `RemoteForward` to `~/.ssh/config` (see step 2).
+6. Sets up the SSH tunnel: a managed tunnel, or a `RemoteForward` in
+   `~/.ssh/config` (see step 2).
 7. Shows the command that installs `zed` on the server, with the same options.
+
+When the installer downloads the listener, it compares it with the
+`SHA256SUMS` file of the same version. If the checksum is not correct, it stops.
 
 Options (Windows / macOS and Linux):
 
@@ -101,18 +110,44 @@ Options (Windows / macOS and Linux):
 | `-NoToken` | `-K` | Use no token. |
 | `-PythonW PATH` | `-P PATH` | Python to use. |
 | `-Yes` | `-y` | Ask no questions: answer yes and use the default values. |
-| `-Force` | `-f` | Replace a newer version. |
+| `-Tunnel managed` | `-T managed` | Managed SSH tunnel (see step 2). |
+| `-Tunnel config` | `-T config` | `RemoteForward` in `~/.ssh/config` (see step 2). |
+| `-WaitClose` | `-W` | Experimental: `zed -w` also ends when you close the tab (see [Wait mode](#use-zed-as-the-editor-of-the-server)). |
+| `-Force` | `-f` | Replace a newer version, or install with a checksum that is not correct. |
 | `-NoAutostart` | `-A` | Do not start the listener at login. |
 | `-SkipSshConfig` | `-S` | Do not change `~/.ssh/config`. |
 | `-Uninstall` | `-u` | Uninstall. |
 
-### 2. SSH configuration (required)
+### 2. SSH tunnel (required)
 
-> **Without this step, it does not work.** The server sends the requests
-> through this SSH tunnel.
+> **Without the tunnel, it does not work.** The server sends the requests
+> through a reverse SSH tunnel to the listener. The installer of step 1 sets it
+> up. It asks which mode to use.
 
-Each server host needs a `RemoteForward` line in `~/.ssh/config` of the local
-computer. **The installer of step 1 does this for you.** It asks first, and then:
+#### Managed tunnel (recommended)
+
+The listener keeps its own SSH connection to the first host, only for the
+tunnel (`ssh -N -R 127.0.0.1:<port>:127.0.0.1:<port> <host>`):
+
+- It reconnects automatically: after 2 seconds, then after longer times (at
+  most 60 seconds). For example, after a network change or after the
+  computer wakes from sleep.
+- Your SSH sessions and Zed need no `RemoteForward`, so the warning
+  `remote port forwarding failed` stops.
+- It needs **SSH key authentication** with no password prompt, because the
+  connection runs in the background. The installer checks this with
+  `ssh -o BatchMode=yes <host> true`. If it does not work, the installer offers
+  the `RemoteForward` mode.
+- The installer removes its old `RemoteForward` block from `~/.ssh/config`. If
+  one of your own `Host` entries has a `RemoteForward` for the port, the tunnel
+  uses it, and the installer tells you to remove that line from your entry.
+- The log of the tunnel is `tunnel-<host>.log`, next to `listener.log`.
+
+#### RemoteForward in `~/.ssh/config`
+
+The forward belongs to your SSH sessions. Each server host needs a
+`RemoteForward` line in `~/.ssh/config` of the local computer. The installer
+does this for you. It asks first, and then:
 
 1. Runs `ssh -G <host>` for each host. If your own entries already forward
    the port, it adds nothing for that host. If your entries forward the same
@@ -146,7 +181,9 @@ Host myserver myserver.ts
 
 After the change, close the SSH sessions to the server and connect again.
 Only one SSH session at a time can forward the port. The other sessions show
-the warning `remote port forwarding failed`. This is normal.
+the warning `remote port forwarding failed`. If the session with the forward
+closes, the forward stops until a new session starts. The managed tunnel does
+not have these problems.
 
 ### 3. Server
 
@@ -168,8 +205,9 @@ With no options, the installer asks for each value:
 Other options: `-y` (ask no questions), `-f` (replace a newer version or a
 `zed` command of a different program), `-u` (uninstall).
 
-It installs `zed` in `~/.local/bin`, saves the settings, and runs
-`zed --doctor` to check the connection to the listener.
+It downloads `zed`, compares it with `SHA256SUMS` of the same version,
+installs it in `~/.local/bin` with the link `zed-browse`, saves the settings,
+and runs `zed --doctor` to check the connection to the listener.
 
 If `~/.local/bin` is not in `PATH`, add this line to `~/.zshrc` or `~/.bashrc`:
 
@@ -189,6 +227,36 @@ https://github.com/franciscocabral/zed-remote-open/releases/latest/download/remo
 
 Each release also has a `SHA256SUMS` file.
 
+### Package managers
+
+**Homebrew** (macOS and Linux, local computer):
+
+```bash
+brew tap franciscocabral/zed-remote-open https://github.com/franciscocabral/zed-remote-open
+brew install zed-remote-open
+zed-remote-open-setup          # the installer of step 1, with the same options
+```
+
+Before `brew uninstall zed-remote-open`, run `zed-remote-open-setup -u`.
+
+**Scoop** (Windows, local computer):
+
+```powershell
+scoop bucket add zed-remote-open https://github.com/franciscocabral/zed-remote-open
+scoop install zed-remote-open
+zed-remote-open-setup          # the installer of step 1, with the same options
+```
+
+`scoop uninstall zed-remote-open` also uninstalls the listener.
+
+**winget** is not available: winget accepts only `.exe`, `.msi` and similar
+installers, not a PowerShell script. A winget package needs a compiled
+installer first.
+
+The release job updates the Homebrew formula ([`Formula/`](Formula)) and the
+Scoop manifest ([`bucket/`](bucket)) with the version and the checksums of
+each release.
+
 ## Usage
 
 ```
@@ -205,6 +273,9 @@ command | zed [OPTIONS] -
 | `-h HOST` | SSH host name of this server. |
 | `-t TARGET` | Address of the listener. |
 | `-c KEY:VALUE` | Save a value in the settings file. An empty value removes the key. With `-c` and no path, `zed` opens nothing. |
+| `--browse URL` | Open an `http://` or `https://` URL in the browser of the local computer. `zed-browse URL` is the same. |
+| `--notify [MESSAGE]` | Show a notification on the local computer. With no MESSAGE, the text comes from stdin. |
+| `--completion bash\|zsh` | Print the shell completion. |
 | `--doctor` | Check the settings and the connection to the listener. |
 | `--update` | Install the latest release of `zed`. |
 | `--uninstall` | Remove `zed` and its settings from the server. |
@@ -245,8 +316,54 @@ Why the save and not the close of the tab: the Zed CLI cannot wait for a
 remote file (`zed --wait` ends at once for `ssh://` URLs), and the server
 cannot see when a tab closes.
 
+**Experimental: end the wait when you close the tab.** Install the listener
+with `-WaitClose` (Windows) or `-W` (macOS, Linux). The listener then reads
+the database of Zed on the local computer and tells `zed -w` when the tab of
+the file closes. The save still ends the wait too.
+
+- It reads only (`mode=ro`), and it searches all the "path" columns, because
+  the tables of this database are internal to Zed.
+- A Zed update can change the database. If the file does not appear in the
+  database in 20 seconds, `zed -w` tells you, and it waits for the save.
+
 > If Zed autosave is on (`"autosave": "after_delay"` or `"on_focus_change"`),
 > the first autosave ends the wait.
+
+### Open URLs in the local browser
+
+```bash
+export BROWSER=zed-browse      # in ~/.zshrc or ~/.bashrc
+gh auth login                  # the login page opens on the local computer
+zed --browse https://example.com
+```
+
+- Only `http://` and `https://` URLs (at most 4096 characters) are accepted.
+- `localhost` in a URL is the local computer, not the server. For a web server
+  that runs on the server, use a port forward (for example, the port forwarding
+  of Zed).
+
+### Notifications
+
+```bash
+make && zed --notify "build finished" || zed --notify "build failed"
+long-task | tail -n 1 | zed --notify          # the text from stdin
+```
+
+The title is `zed-remote-open: <host>`. The message is one line of at most
+1000 characters. On the local computer:
+
+- Windows: a Windows notification (with Windows PowerShell).
+- macOS: a notification of the Notification Center (`osascript`).
+- Linux: `notify-send` (install `libnotify-bin` or `libnotify`).
+
+### Shell completion
+
+```bash
+eval "$(zed --completion zsh)"     # in ~/.zshrc, after compinit
+source <(zed --completion bash)    # in ~/.bashrc
+```
+
+It completes the options, the `-c` keys and the file names.
 
 ### Settings
 
@@ -329,8 +446,11 @@ Run `zed --doctor` on the server first. It shows the settings, where each
 value comes from, and the result of a test request to the listener.
 
 - **Log of the listener:** `listener.log` in the directory of step 1. It has
-  each request and each rejected request with the reason. It never contains
-  the token.
+  each request and each rejected request with the reason, and the exit code
+  and output of each `zed` call. It never contains the token.
+- **Managed tunnel:** `tunnel-<host>.log` in the same directory has the
+  errors of `ssh`, and `listener.log` has each connection and reconnection.
+  For `Permission denied`, set up SSH key authentication for the host.
 - **`cannot connect to the listener`:** the listener does not run, or the SSH
   session has no `RemoteForward`. Do steps 1 and 2 again and connect again.
 - **`host '...' is not allowed`:** the host of the server is not in the hosts
@@ -354,6 +474,13 @@ value comes from, and the result of a test request to the listener.
   most 16 connections at the same time.
 - It runs `zed` without a shell. The client cannot add options to the `zed`
   command: the listener makes the command line from the fields of the request.
+- It opens only `http://` and `https://` URLs. A notification is one line of
+  text, and its text goes to the notification program as an argument or an
+  environment variable, never as part of a command.
+- The installers and `zed --update` compare each downloaded file with the
+  `SHA256SUMS` of the same version. This finds a damaged or changed download.
+  It does not protect against a change on GitHub itself, because
+  `SHA256SUMS` comes from the same place.
 - The settings files with the token have mode `600` (on Windows, they are in
   `%LOCALAPPDATA%`, which only your user can read).
 
@@ -365,6 +492,10 @@ value comes from, and the result of a test request to the listener.
   `HOME` and tests them together.
 - `tests/test-windows-installer.ps1`: the same test on Windows. It changes
   the Startup folder and `~/.ssh/config` of the current user: run it only in CI.
+- To test the installers from a branch, run `scripts/update-packages.py --sums-only`,
+  commit `SHA256SUMS`, and use the commit URL
+  (`ZED_REMOTE_OPEN_URL=https://github.com/franciscocabral/zed-remote-open/raw/<commit>`
+  or `-BaseUrl`).
 
 ### CI and releases
 
@@ -383,9 +514,11 @@ On a push to `main`, after all tests pass, the **release** job:
    `BREAKING CHANGE` = major. Other types make no release. A higher version
    in `VERSION` wins.
 2. Writes the version in the files and points the download URLs in the README
-   and in the installers to the new tag.
+   and in the installers to the new tag. Writes `SHA256SUMS`, and updates the
+   Homebrew formula and the Scoop manifest (`scripts/update-packages.py`).
 3. Commits `chore(release): vX.Y.Z [skip ci]`, makes the tag, and pushes both.
-4. Publishes a GitHub release with the five files and `SHA256SUMS`.
+4. Publishes a GitHub release with the five files and `SHA256SUMS`
+   (with the file names of the release).
 
 The release commit does not start the CI again: it has `[skip ci]`, and a push
 with `GITHUB_TOKEN` starts no workflow. After a release, run `git pull` before
