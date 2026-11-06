@@ -29,7 +29,9 @@ With no PATH, it opens the current directory. For a file in a Git
 repository, it also opens the repository root. "-" opens the text from stdin.
 
 Options:
-  -w             Wait until you save the file in Zed (for EDITOR="zed -w").
+  -w             Wait until you save the file in Zed, or close its tab (with the
+                 experimental wait_close of the listener). For git:
+                 git config --global core.editor "zed -w"
                  Enter in the terminal continues without a save; Ctrl+C
                  cancels (exit code 1). With Zed autosave, the first
                  autosave ends the wait.
@@ -239,6 +241,16 @@ ensure_exists() {
     fi
 }
 
+# Prints the root of the Git work tree of a directory, or nothing. In .git/
+# (for example COMMIT_EDITMSG of "git commit"), it is the directory above .git.
+git_root() {
+    local dir=$1
+    if [[ $dir == */.git || $dir == */.git/* ]]; then
+        dir=${dir%%/.git*}
+    fi
+    git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true
+}
+
 # Saves stdin in a file of the cache directory and prints its path.
 stdin_file() {
     [[ ! -t 0 ]] || die "'-' reads the text from stdin, but stdin is a terminal"
@@ -285,8 +297,10 @@ run_open() {
         fi
         ensure_exists "$p_path" "$path" || continue
 
-        if [[ $mode == open && ! -d $path ]]; then
-            root=$(git -C "$(dirname -- "$path")" rev-parse --show-toplevel 2>/dev/null || true)
+        # The Git root first, also in wait mode: then the file opens in the
+        # window of the project, not in a window of its own.
+        if [[ ! -d $path ]]; then
+            root=$(git_root "$(dirname -- "$path")")
             [[ -n $root ]] && add_path 0 0 "$root"
         fi
         add_path "$p_line" "$p_col" "$path"
@@ -338,6 +352,7 @@ wait_for_save() {
     local -a files=() before=()
     for entry in "${req_paths[@]}"; do
         path=${entry#* * }
+        [[ ! -d $path ]] || continue # The Git root: only the files end the wait.
         files+=("$path")
         before+=("$(file_signature "$path")")
     done

@@ -303,8 +303,10 @@ Git uses the first of these that is set: `GIT_EDITOR`, `core.editor`,
 `VISUAL`, `EDITOR`. So `EDITOR` alone has no effect on Git if `core.editor`
 or `GIT_EDITOR` is set. `git var GIT_EDITOR` shows the editor that Git uses.
 
-With `-w`, `zed` sends only the files (not the Git root), and it waits until
-you **save** one of them in Zed:
+With `-w`, `zed` also sends the Git root, so the file opens in the window of
+the project. For a file in `.git/` (for example `COMMIT_EDITMSG`), the root is
+the directory above `.git`. Then `zed -w` waits until you **save** one of the
+files in Zed:
 
 | Action | Result |
 |---|---|

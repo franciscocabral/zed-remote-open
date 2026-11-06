@@ -125,13 +125,27 @@ class RemoteZedTest(unittest.TestCase):
 
     def test_wait_ends_at_the_save(self):
         proc = self.start_wait("a.md")
-        self.assertEqual(self.last_call(), [f"ssh://testhost{self.repo}/a.md"])
+        # The Git root first: the file opens in the window of the project.
+        r = f"ssh://testhost{self.repo}"
+        self.assertEqual(self.new_calls(2), [[r], [f"{r}/a.md"]])
         time.sleep(1)
         self.assertIsNone(proc.poll(), "zed -w returned before the save")
         (self.repo / "a.md").write_text("edited\n")  # The user saves in Zed.
         out, _ = proc.communicate(timeout=10)
         self.assertEqual(proc.returncode, 0)
         self.assertIn(f"Saved: {self.repo}/a.md", out)
+
+    def test_wait_file_in_dot_git(self):
+        """git commit: .git/COMMIT_EDITMSG opens in the window of the project."""
+        message = self.repo / ".git" / "COMMIT_EDITMSG"
+        message.write_text("\n")
+        proc = self.start_wait(".git/COMMIT_EDITMSG")
+        r = f"ssh://testhost{self.repo}"
+        self.assertEqual(self.new_calls(2), [[r], [f"{r}/.git/COMMIT_EDITMSG"]])
+        time.sleep(1)
+        message.write_text("feat: a message\n")
+        _, err = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 0, err)
 
     def test_wait_cancel(self):
         proc = self.start_wait("b.md")
