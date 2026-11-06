@@ -21,8 +21,8 @@ function Test-Condition([bool]$Condition, [string]$Message) {
     Write-Host "ok: $Message" -ForegroundColor Green
 }
 
-function Invoke-Installer([string[]]$Arguments) {
-    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer @Arguments 2>&1 | Out-String
+function Invoke-Installer([string[]]$Arguments, [string]$Path = $installer) {
+    $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Path @Arguments 2>&1 | Out-String
     Write-Host $output
     return $output
 }
@@ -62,13 +62,53 @@ try {
     Test-Condition ($out -match 'The current token stays') 'the token stays'
     Test-Condition ($out -match 'No change is necessary') 'no second SSH block'
 
+    Write-Host '### Managed SSH tunnel'
+    $out = Invoke-Installer @('-Yes', '-Tunnel', 'managed', '-Port', "$port", '-Hosts', 'testhost')
+    Test-Condition ($out -match 'does not work without a password') 'the key check fails for testhost'
+    $settings = Get-Content (Join-Path $installDir 'listener.json') -Raw | ConvertFrom-Json
+    Test-Condition (@($settings.tunnel_hosts) -contains 'testhost') 'listener.json has tunnel_hosts'
+    $blocks = @(Select-String -Path $sshConfig -Pattern '^# BEGIN zed-remote-open').Count
+    Test-Condition ($blocks -eq 0) 'no block in ~/.ssh/config in managed mode'
+    Start-Sleep -Seconds 2
+    $log = Get-Content (Join-Path $installDir 'listener.log') -Raw
+    Test-Condition ($log -match 'Tunnel testhost: connecting') 'the listener starts the tunnel'
+
+    Write-Host '### Back to config mode'
+    $out = Invoke-Installer @('-Yes', '-Tunnel', 'config', '-Port', "$port", '-Hosts', 'testhost,testhost.ts')
+    Test-Condition ($out -match 'Verified: ssh testhost\.ts forwards') 'the block is back'
+
+    Write-Host '### Checksum of a downloaded listener'
+    $srv = Join-Path $work 'srv'
+    $alone = Join-Path $work 'alone'
+    New-Item -ItemType Directory -Force -Path (Join-Path $srv 'local'), $alone | Out-Null
+    Copy-Item (Join-Path $root 'local\zed-listener.pyw') (Join-Path $srv 'local\zed-listener.pyw')
+    Copy-Item $installer $alone
+    $hash = (Get-FileHash -Algorithm SHA256 (Join-Path $srv 'local\zed-listener.pyw')).Hash.ToLower()
+    $sums = Join-Path $srv 'SHA256SUMS'
+    [IO.File]::WriteAllText($sums, "$hash  local/zed-listener.pyw`n")
+    $httpPort = [int](& $python -c 'import socket; s = socket.socket(); s.bind((''127.0.0.1'', 0)); print(s.getsockname()[1])')
+    $http = Start-Process -FilePath $python -PassThru -WindowStyle Hidden `
+        -ArgumentList @('-m', 'http.server', "$httpPort", '--bind', '127.0.0.1', '--directory', $srv)
+    Start-Sleep -Seconds 2
+    $aloneInstaller = Join-Path $alone 'local-windows-installer.ps1'
+    $common = @('-Yes', '-Tunnel', 'config', '-SkipSshConfig', '-NoAutostart', '-Port', "$port",
+        '-Hosts', 'testhost', '-BaseUrl', "http://127.0.0.1:$httpPort")
+    $out = Invoke-Installer $common $aloneInstaller
+    Test-Condition ($out -match 'Checksum: correct') 'the checksum of the download is correct'
+    [IO.File]::WriteAllText($sums, ('0' * 64) + "  local/zed-listener.pyw`n")
+    $out = Invoke-Installer $common $aloneInstaller
+    Test-Condition ($LASTEXITCODE -ne 0) 'a wrong checksum stops the installer'
+    Test-Condition ($out -match 'checksum of the listener is not correct') 'the installer says why'
+    Stop-Process -Id $http.Id -Force -ErrorAction SilentlyContinue
+
     Write-Host '### Uninstall'
     $null = Invoke-Installer @('-Yes', '-Uninstall')
     Test-Condition (-not (Test-Path $shortcut)) 'the shortcut is removed'
     Test-Condition (-not (Test-Path $installDir)) 'the install directory is removed'
     Test-Condition (-not (Select-String -Path $sshConfig -Pattern 'zed-remote-open' -Quiet)) 'the SSH block is removed'
-    $running = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*zed-listener*' })
-    Test-Condition ($running.Count -eq 0) 'the listener is stopped'
+    $running = @(Get-CimInstance Win32_Process | Where-Object {
+            $_.CommandLine -like '*zed-listener*' -or $_.CommandLine -like '*zed-remote-open*tunnel-*' })
+    Test-Condition ($running.Count -eq 0) 'the listener and the tunnel are stopped'
     Write-Host 'All Windows installer tests passed.' -ForegroundColor Green
 } finally {
     Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*zed-listener*' } |

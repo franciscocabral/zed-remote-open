@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -12,7 +13,7 @@ import time
 import unittest
 from pathlib import Path
 
-from helpers import TOKEN, ZED_SCRIPT, RunningListener, load_listener
+from helpers import TOKEN, ZED_SCRIPT, FakeZed, RunningListener, load_listener
 
 
 def bash_ok() -> bool:
@@ -30,7 +31,13 @@ VERSION = load_listener().__version__
 class RemoteZedTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.listener = RunningListener(hosts=("testhost", "testhost.ts"), token=TOKEN)
+        def extra(listener):
+            cls.browser = FakeZed(listener.dir, "browser")
+            cls.notifier = FakeZed(listener.dir, "notifier")
+            return {"browser_command": str(cls.browser.path),
+                    "notify_command": str(cls.notifier.path)}
+        cls.listener = RunningListener(hosts=("testhost", "testhost.ts"), token=TOKEN,
+                                       extra=extra)
 
     @classmethod
     def tearDownClass(cls):
@@ -108,7 +115,7 @@ class RemoteZedTest(unittest.TestCase):
 
     def test_wait_ends_at_the_save(self):
         proc = self.start_wait("a.md")
-        self.assertEqual(self.last_call(), ["--wait", f"ssh://testhost{self.repo}/a.md"])
+        self.assertEqual(self.last_call(), [f"ssh://testhost{self.repo}/a.md"])
         time.sleep(1)
         self.assertIsNone(proc.poll(), "zed -w returned before the save")
         (self.repo / "a.md").write_text("edited\n")  # The user saves in Zed.
@@ -145,7 +152,7 @@ class RemoteZedTest(unittest.TestCase):
         cases = [
             (["-h", "evil", "a.md"], "host 'evil' is not allowed"),
             (["a.md"], "invalid token", {"ZED_LISTENER_TOKEN": "wrong-token-123456"}),
-            (["-p", "1", "a.md"], "cannot connect to the listener"),
+            (["-p", "1", "a.md"], "nothing listens on this port of the server"),
             (["-c", "window:big"], "'big' is not a valid window"),
             (["-x"], "unknown option -x"),
             (["--nope"], "unknown option --nope"),
@@ -166,8 +173,73 @@ class RemoteZedTest(unittest.TestCase):
         self.assertEqual(bad.returncode, 1)
         self.assertIn("[fail]", bad.stdout)
 
+    def test_browse(self):
+        url = "https://example.com/device?code=AB-12"
+        out = self.zed("--browse", url)
+        self.assertIn(url, out.stdout)
+        self.assertEqual(self.browser.read(1)[-1], [url])
+        # "zed-browse URL" through a link, as for BROWSER=zed-browse.
+        link = self.home / "zed-browse"
+        link.symlink_to(ZED_SCRIPT)
+        subprocess.run(["bash", str(link), "http://localhost:8080/"], check=True,
+                       capture_output=True, env=self.env, timeout=30)
+        self.assertEqual(self.browser.read(2)[-1], ["http://localhost:8080/"])
+        bad = self.zed("--browse", "file:///etc/passwd", check=False)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("not an http:// or https:// URL", bad.stderr)
+
+    def test_notify(self):
+        self.zed("--notify", "build", "finished")
+        self.assertEqual(self.notifier.read(1)[-1], ["zed-remote-open: testhost", "build finished"])
+        self.zed("--notify", stdin="line 1\nline 2\tend\n")
+        self.assertEqual(self.notifier.read(2)[-1][1], "line 1 line 2 end")
+        self.assertIn("needs a message", self.zed("--notify", check=False).stderr)
+
+    def test_completion(self):
+        for shell in ("bash", "zsh"):
+            with self.subTest(shell):
+                out = self.zed("--completion", shell).stdout
+                self.assertIn("_zed_remote_open", out)
+                if shutil.which(shell):
+                    subprocess.run([shell, "-n"], input=out, text=True, check=True)
+
     def test_version(self):
         self.assertEqual(self.zed("--version").stdout.strip(), f"zed-remote-open {VERSION}")
+
+
+@unittest.skipUnless(bash_ok(), "needs Bash 4 or later")
+class WaitCloseTest(unittest.TestCase):
+    """zed -w with the experimental close detection of the listener."""
+
+    def test_close_ends_the_wait(self):
+        db_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(db_dir.cleanup)
+        db = Path(db_dir.name) / "db.sqlite"
+        with sqlite3.connect(db) as con:
+            con.execute("CREATE TABLE editors (item_id INTEGER, path BLOB)")
+        listener = RunningListener(extra={"wait_close": True, "zed_db": str(db)})
+        self.addCleanup(listener.close)
+        home = Path(db_dir.name) / "home"
+        home.mkdir()
+        target = home / "COMMIT_EDITMSG"
+        target.write_text("\n")
+        env = {"HOME": str(home), "PATH": os.environ["PATH"], "ZED_SSH_HOST": "testhost",
+               "ZED_LISTENER_PORT": str(listener.port)}
+        proc = subprocess.Popen(["bash", str(ZED_SCRIPT), "-w", str(target)], env=env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, start_new_session=True)
+        self.addCleanup(proc.kill)
+        listener.zed.read(1)
+        with sqlite3.connect(db) as con:  # Zed opens the tab.
+            con.execute("INSERT INTO editors VALUES (1, ?)", (str(target),))
+        time.sleep(1.5)
+        self.assertIsNone(proc.poll(), "zed -w returned before the tab closed")
+        with sqlite3.connect(db) as con:  # The user closes the tab, with no save.
+            con.execute("DELETE FROM editors")
+        out, err = proc.communicate(timeout=15)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertIn("Close the tab or save the file", out)
+        self.assertIn("Closed in Zed.", out)
 
 
 if __name__ == "__main__":

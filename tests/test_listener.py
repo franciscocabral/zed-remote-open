@@ -2,11 +2,14 @@
 
 import json
 import socket
+import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
-from helpers import TOKEN, RunningListener, load_listener, request, send
+from helpers import TOKEN, FakeZed, RunningListener, load_listener, request, send
 
 zl = load_listener()
 
@@ -46,6 +49,26 @@ class ParseRequestTest(unittest.TestCase):
             with self.subTest(message), self.assertRaisesRegex(zl.BadRequest, message):
                 self.parse(lines)
 
+    def test_browse(self):
+        req = self.parse(["zro 2", "host srv", "mode browse", "url https://example.com/a?b=1"])
+        self.assertEqual(req.url, "https://example.com/a?b=1")
+        for url in ("file:///etc/passwd", "javascript:alert(1)", "https://", "http://a b",
+                    "https://x/\x07", "ftp://x"):
+            with self.subTest(url), self.assertRaisesRegex(zl.BadRequest, "invalid URL"):
+                self.parse(["zro 2", "host srv", "mode browse", f"url {url}"])
+        with self.assertRaisesRegex(zl.BadRequest, "takes no path"):
+            self.parse(["zro 2", "host srv", "mode browse", "url https://x", "path 0 0 /a"])
+
+    def test_notify(self):
+        req = self.parse(["zro 2", "host srv", "mode notify", "message build done"])
+        self.assertEqual(req.message, "build done")
+        for lines, message in ((["message "], "invalid message"),
+                               ([f"message {'x' * 1001}"], "invalid message"),
+                               (["message a\x1bb"], "invalid message"),
+                               (["message a", f"title {'t' * 201}"], "invalid title")):
+            with self.subTest(lines), self.assertRaisesRegex(zl.BadRequest, message):
+                self.parse(["zro 2", "host srv", "mode notify", *lines])
+
     def test_token(self):
         cfg = config(token=TOKEN)
         self.parse(["zro 2", f"token {TOKEN}", "host srv", "path 0 0 /a"], cfg)
@@ -59,11 +82,12 @@ class BuildCommandTest(unittest.TestCase):
     def test_urls_and_options(self):
         req = zl.Request("srv", "wait", "new", None,
                          [(0, 0, "/r"), (5, 0, "/r/a b.ts"), (5, 2, "/r/x:1")])
-        # One call for each URL; --new only on the first call.
+        # One call for each URL; --new only on the first call; no --wait
+        # (the Zed CLI cannot wait for ssh:// URLs).
         self.assertEqual(zl.build_commands(config(), req), [
-            ["zed", "--wait", "--new", "ssh://srv/r"],
-            ["zed", "--wait", "ssh://srv/r/a%20b.ts:5"],
-            ["zed", "--wait", "ssh://srv/r/x%3A1:5:2"],
+            ["zed", "--new", "ssh://srv/r"],
+            ["zed", "ssh://srv/r/a%20b.ts:5"],
+            ["zed", "ssh://srv/r/x%3A1:5:2"],
         ])
 
     def test_current_window(self):
@@ -90,7 +114,8 @@ class LoadConfigTest(unittest.TestCase):
     def test_invalid(self):
         for data in ({"hosts": []}, {"hosts": ["a b"]}, {"hosts": ["a"], "port": 0},
                      {"hosts": ["a"], "port": True}, {"hosts": ["a"], "token": "short"},
-                     {"hosts": ["a"], "zed_command": "/does/not/exist"}):
+                     {"hosts": ["a"], "zed_command": "/does/not/exist"},
+                     {"hosts": ["a"], "tunnel_hosts": "a"}, {"hosts": ["a"], "wait_close": 1}):
             with self.subTest(data), self.assertRaises(zl.ConfigError):
                 self.load(data)
 
@@ -110,12 +135,12 @@ class ListenerProcessTest(unittest.TestCase):
         out = send(self.listener.port, request("testhost", token=TOKEN))
         self.assertEqual(out, [f"OK {zl.__version__}"])
 
-    def test_open_and_wait(self):
+    def test_wait_without_close_detection(self):
         port = self.listener.port
-        out = send(port, request("testhost", "wait", TOKEN, [(3, 0, "/tmp/a")]), wait_done=True)
-        self.assertEqual(out, [f"OK {zl.__version__}", "DONE 0"])
+        out = send(port, request("testhost", "wait", TOKEN, [(3, 0, "/tmp/a")]), count=3)
+        self.assertEqual(out, [f"OK {zl.__version__}", "WAIT save"])
         calls = self.listener.zed.read(1)
-        self.assertEqual(calls[-1], ["--wait", "ssh://testhost/tmp/a:3"])
+        self.assertEqual(calls[-1], ["ssh://testhost/tmp/a:3"])
 
     def test_rejected(self):
         out = send(self.listener.port, request("testhost", token="wrong-token-123456"))
@@ -131,6 +156,67 @@ class ListenerProcessTest(unittest.TestCase):
             s.sendall(b"zro 2\n")
             s.settimeout(10)
             self.assertEqual(s.makefile().readline().strip(), "ERR timeout")
+
+
+class ListenerFeaturesTest(unittest.TestCase):
+    """Browse, notify, the experimental close detection and the managed tunnel."""
+
+    @classmethod
+    def setUpClass(cls):
+        def extra(listener):
+            cls.browser = FakeZed(listener.dir, "browser")
+            cls.notifier = FakeZed(listener.dir, "notifier")
+            cls.ssh = FakeZed(listener.dir, "ssh")
+            cls.db = listener.dir / "zed-db.sqlite"
+            with sqlite3.connect(cls.db) as con:
+                con.execute("CREATE TABLE editors (item_id INTEGER, path BLOB)")
+            return {"browser_command": str(cls.browser.path),
+                    "notify_command": str(cls.notifier.path),
+                    "ssh_command": str(cls.ssh.path), "tunnel_hosts": ["testhost"],
+                    "wait_close": True, "zed_db": str(cls.db)}
+        cls.listener = RunningListener(hosts=("testhost",), extra=extra)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.listener.close()
+
+    def test_browse(self):
+        out = send(self.listener.port, request(
+            "testhost", "browse", extra=["url https://example.com/login?x=1"]))
+        self.assertEqual(out, [f"OK {zl.__version__}"])
+        self.assertEqual(self.browser.read(1)[-1], ["https://example.com/login?x=1"])
+
+    def test_notify(self):
+        out = send(self.listener.port, request("testhost", "notify", extra=["message done: 0"]))
+        self.assertEqual(out, [f"OK {zl.__version__}"])
+        self.assertEqual(self.notifier.read(1)[-1], ["zed-remote-open: testhost", "done: 0"])
+
+    def test_wait_close(self):
+        """The tab of the file opens (a row in the database), then closes."""
+        def edit(_sock):
+            time.sleep(1)
+            with sqlite3.connect(self.db) as con:
+                con.execute("INSERT INTO editors VALUES (1, CAST(? AS BLOB))",
+                            ("/srv/repo/COMMIT_EDITMSG",))
+            time.sleep(1.5)
+            with sqlite3.connect(self.db) as con:
+                con.execute("DELETE FROM editors")
+
+        started = time.monotonic()
+        out = send(self.listener.port, request(
+            "testhost", "wait", paths=[(0, 0, "/srv/repo/COMMIT_EDITMSG")]),
+            count=3, timeout=20, during=lambda s: threading.Thread(target=edit, args=(s,)).start())
+        self.assertEqual(out, [f"OK {zl.__version__}", "WAIT close", "DONE 0"])
+        self.assertGreater(time.monotonic() - started, 2.5)
+
+    def test_tunnel_reconnects(self):
+        """The fake ssh stops at once: the listener starts it again."""
+        calls = self.ssh.read(2, timeout=15)
+        port = self.listener.port
+        self.assertIn("-N", calls[0])
+        self.assertIn(f"127.0.0.1:{port}:127.0.0.1:{port}", calls[0])
+        self.assertEqual(calls[0][-1], "testhost")
+        self.assertIn("Tunnel testhost: ended", self.listener.log_text())
 
 
 if __name__ == "__main__":
