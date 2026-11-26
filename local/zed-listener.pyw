@@ -8,7 +8,7 @@ Protocol "zro 2". One TCP connection on 127.0.0.1 = one request:
     zro 2
     token <token>                      only if the listener has a token
     host <ssh host>
-    mode open|wait|ping|browse|notify  optional, default open
+    mode open|wait|ping|status|browse|notify  optional, default open
     path <line> <column> <absolute path>    open, wait: one or more (0 = no position)
     url <http or https URL>            browse: the URL to open in the browser
     title <text>                       notify: optional
@@ -16,6 +16,9 @@ Protocol "zro 2". One TCP connection on 127.0.0.1 = one request:
     end
 
 The listener sends one response line: "OK <version>" or "ERR <message>".
+For mode "status", the line is "OK <version> idle=<seconds|unknown> name=<name>":
+with several local computers, zed selects the one with the most recent user
+input (the lowest idle time).
 For mode "wait", it then sends "WAIT close" (it reports when the tabs close,
 then sends "DONE 0") or "WAIT save" (the client waits for a save).
 
@@ -70,6 +73,7 @@ CLOSE_APPEAR_TIMEOUT = 20.0  # seconds for the files to appear in the Zed databa
 HOST_RE = re.compile(r"[A-Za-z0-9._-]+")
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,256}")
 PATH_RE = re.compile(r"(\d{1,9}) (\d{1,9}) (/.*)")
+NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # Windows only
 
@@ -95,6 +99,8 @@ class Config:
     zed_db: Path | None = None
     browser_command: str | None = None
     notify_command: str | None = None
+    idle_command: str | None = None
+    name: str = "local"
 
 
 @dataclass
@@ -185,9 +191,13 @@ def load_config(path: Path) -> Config:
     log = Path(data["log"]) if data.get("log") else data_dir() / "listener.log"
     ssh = find_command(data.get("ssh_command"), ("ssh",), "ssh_command") if tunnel_hosts else None
     optional = {}
-    for key in ("browser_command", "notify_command"):
+    for key in ("browser_command", "notify_command", "idle_command"):
         if data.get(key):
             optional[key] = find_command(data[key], (data[key],), key)
+    name = data.get("name") or default_name()
+    if not (isinstance(name, str) and NAME_RE.fullmatch(name)):
+        raise ConfigError(f"invalid name: {name!r} (use 1 to 64 letters, digits, '.', '_' or '-')")
+    optional["name"] = name
     return Config(
         port, frozenset(hosts), token,
         find_command(data.get("zed_command"), ("zed", "zeditor"), "zed_command"),
@@ -269,7 +279,7 @@ def parse_request(lines: list[str], cfg: Config) -> Request:
     req = Request(host, values.get("mode", "open"), None,
                   paths, values.get("url", ""), values.get("title", ""),
                   values.get("message", ""))
-    if req.mode not in ("open", "wait", "ping", "browse", "notify"):
+    if req.mode not in ("open", "wait", "ping", "status", "browse", "notify"):
         raise BadRequest(f"invalid mode {req.mode!r}: update the listener")
     if req.mode in ("open", "wait"):
         if not paths:
@@ -328,12 +338,77 @@ def handle(conn: socket.socket, cfg: Config) -> None:
     if req.mode == "ping":
         logging.info("Ping from host %s", req.host)
         send(conn, f"OK {__version__}")
+    elif req.mode == "status":
+        idle = idle_seconds(cfg)
+        idle_text = "unknown" if idle is None else str(int(idle))
+        send(conn, f"OK {__version__} idle={idle_text} name={cfg.name}")
     elif req.mode == "browse":
         handle_browse(conn, cfg, req)
     elif req.mode == "notify":
         handle_notify(conn, cfg, req)
     else:
         handle_open(conn, cfg, req)
+
+
+# --- Idle time of the user (for several local computers) ---
+
+
+def default_name() -> str:
+    """The computer name, with only the characters that the protocol accepts."""
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname().split(".")[0])[:64]
+    return name or "local"
+
+
+def run_for_output(args: list[str]) -> str | None:
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, timeout=3,
+                             creationflags=NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout if out.returncode == 0 else None
+
+
+def idle_seconds(cfg: Config) -> float | None:
+    """Seconds since the last keyboard or mouse input on this computer, or None."""
+    try:
+        if cfg.idle_command:
+            out = run_for_output([cfg.idle_command])
+            return float(out.strip()) if out else None
+        if sys.platform == "win32":
+            return windows_idle()
+        if sys.platform == "darwin":
+            out = run_for_output(["ioreg", "-c", "IOHIDSystem", "-d", "4"])
+            m = re.search(r'"HIDIdleTime" = (\d+)', out or "")
+            return int(m[1]) / 1e9 if m else None
+        if os.environ.get("DISPLAY") and shutil.which("xprintidle"):
+            out = run_for_output(["xprintidle"])
+            if out and out.strip().isdigit():
+                return int(out) / 1000
+        if shutil.which("gdbus"):  # GNOME, also on Wayland.
+            out = run_for_output([
+                "gdbus", "call", "--session", "--dest", "org.gnome.Mutter.IdleMonitor",
+                "--object-path", "/org/gnome/Mutter/IdleMonitor/Core",
+                "--method", "org.gnome.Mutter.IdleMonitor.GetIdletime"])
+            m = re.search(r"uint64 (\d+)", out or "")
+            return int(m[1]) / 1000 if m else None
+    except (ValueError, OSError):
+        return None
+    return None
+
+
+def windows_idle() -> float | None:
+    import ctypes
+
+    class LastInputInfo(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+    info = LastInputInfo()
+    info.cbSize = ctypes.sizeof(info)
+    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+        return None
+    ctypes.windll.kernel32.GetTickCount.restype = ctypes.c_uint
+    now = ctypes.windll.kernel32.GetTickCount()
+    return ((now - info.dwTime) & 0xFFFFFFFF) / 1000  # The tick count wraps after 49 days.
 
 
 # --- Open and wait ---
@@ -710,10 +785,10 @@ def main(argv: list[str] | None = None) -> None:
     slots = threading.BoundedSemaphore(MAX_CLIENTS)
     with socket.create_server(("127.0.0.1", cfg.port)) as server:
         logging.info(
-            "Version %s listening on 127.0.0.1:%d for hosts %s (token: %s, zed: %s, "
-            "tunnels: %s, wait_close: %s)",
-            __version__, cfg.port, sorted(cfg.hosts), "yes" if cfg.token else "no", cfg.zed,
-            list(cfg.tunnel_hosts) or "none", cfg.wait_close,
+            "Version %s (name %s) listening on 127.0.0.1:%d for hosts %s (token: %s, "
+            "zed: %s, tunnels: %s, wait_close: %s)",
+            __version__, cfg.name, cfg.port, sorted(cfg.hosts), "yes" if cfg.token else "no",
+            cfg.zed, list(cfg.tunnel_hosts) or "none", cfg.wait_close,
         )
         stop = threading.Event()
         tunnels = [Tunnel(cfg, host, stop) for host in cfg.tunnel_hosts]
