@@ -400,6 +400,10 @@ stop_listeners
 # --- 5. Port ---
 
 current_port=$(json_get "$CONFIG" port 2>/dev/null || true)
+if ((interactive)) && [[ -z $opt_port ]]; then
+    note "Each local computer that opens files of the same server needs its own port"
+    note "(for example 7682 on the first computer, 7683 on the second)."
+fi
 port=${opt_port:-$(ask "Listener port" "${current_port:-$DEFAULT_PORT}")}
 while true; do
     if ! [[ $port =~ ^[0-9]{1,5}$ ]] || ((10#$port < 1 || 10#$port > 65535)); then
@@ -625,7 +629,8 @@ if [[ $tunnel_mode == config ]]; then
     echo "  the warning \"remote port forwarding failed\". This is normal."
 fi
 
-remote_cmd="bash <(curl -fsSL $BASE_URL/remote/remote-linux-installer.sh) -y -h ${hosts[0]} -p $port"
+# "-p +PORT" adds this computer to the list on the server (several local computers).
+remote_cmd="bash <(curl -fsSL $BASE_URL/remote/remote-linux-installer.sh) -y -h ${hosts[0]} -p +$port"
 [[ -z $token ]] || remote_cmd="$remote_cmd -k $token"
 echo
 echo "Then install the zed command on the server. Run this command there:"
