@@ -26,6 +26,7 @@ make && zed --notify "done"   # a notification on the local computer
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Several local computers](#several-local-computers)
 - [Settings](#settings)
 - [Limitations](#limitations)
 - [Versions and updates](#versions-and-updates)
@@ -54,7 +55,7 @@ and then it shows a command for the server.
 **2. On the server**, run the command that the setup shows. For example:
 
 ```bash
-bash <(curl -fsSL https://www.github.com/franciscocabral/zed-remote-open/raw/v1.2.1/remote/remote-linux-installer.sh) -y -h myserver -p 7682 -k <token>
+bash <(curl -fsSL https://www.github.com/franciscocabral/zed-remote-open/raw/v1.2.1/remote/remote-linux-installer.sh) -y -h myserver -p +7682 -k <token>
 ```
 
 **3. Test it** on the server:
@@ -230,7 +231,7 @@ asks for each value:
 | Option | Value |
 |---|---|
 | `-h HOST` | The SSH host name that the local computer uses for this server. It must be one of the hosts of the listener. |
-| `-p PORT` | The port of the tunnel on the server (default `7682`). |
+| `-p PORT` | The port of the tunnel on the server (default `7682`). `+PORT` adds a port to the list (one more local computer, see [Several local computers](#several-local-computers)); with `-k`, the token is for that port. |
 | `-t TARGET` | The address of the listener (default `127.0.0.1`). |
 | `-k TOKEN` | The token of the listener, if it has one. |
 | `-y` | Ask no questions. |
@@ -353,6 +354,46 @@ eval "$(zed --completion zsh)"     # in ~/.zshrc, after compinit
 source <(zed --completion bash)    # in ~/.bashrc
 ```
 
+## Several local computers
+
+You can use the same server, with the same user, from more than one local
+computer (for example a desktop and a laptop). Files open on the computer
+that you use now.
+
+1. Install the listener on each local computer with **its own port**: for
+   example 7682 on the desktop and 7683 on the laptop.
+2. On the server, run the command that each local installer shows. It has
+   `-p +<port>`, so it **adds** the port of that computer to the list, with
+   its token.
+3. Check it with `zed --doctor`:
+
+   ```
+   Local computers (zed uses the one with the most recent user input):
+          7682   desktop          last input: 2 h       version 1.3.0
+          7683   laptop           last input: 4 s       version 1.3.0  <- selected
+   ```
+
+**How `zed` selects the computer.** With more than one port, `zed` asks each
+listener for the time since the last keyboard or mouse input on its computer,
+and it uses the one with the most recent input. A computer with no tunnel now
+(it is off, or not connected) does not answer, so `zed` skips it. This also
+works in tmux or screen, after you attach from the other computer.
+
+| Case | Result |
+|---|---|
+| One port | `zed` uses it, with no extra request. |
+| `-p PORT` or `ZED_LISTENER_PORT` | `zed` uses that port only. |
+| No listener knows its idle time | `zed` uses the first listener that answers (in the order of the list). |
+| A listener older than 1.3.0 | It can open files, but it gives no idle time. |
+
+The idle time comes from Windows (`GetLastInputInfo`), macOS (`ioreg`), and
+Linux with `xprintidle` (X11) or GNOME (also on Wayland). For other desktops,
+set `idle_command` in `listener.json`: a command that prints the idle seconds.
+`name` in `listener.json` changes the name in `zed --doctor` (the default is
+the computer name).
+
+To remove a computer: `zed -c port:-7683 -c token:-7683`.
+
 ## Settings
 
 ### Server
@@ -362,14 +403,17 @@ File: `~/.config/zed-remote-open/settings.json` (mode `600`).
 | Key | Value | Environment variable |
 |---|---|---|
 | `host` | SSH host name of this server (default: `hostname -s`) | `ZED_SSH_HOST` |
-| `port` | 1 to 65535 (default `7682`) | `ZED_LISTENER_PORT` |
+| `port` | A port (1 to 65535, default `7682`), or a list for [several local computers](#several-local-computers): `7682,7683` | `ZED_LISTENER_PORT` |
 | `target` | Address of the listener (default `127.0.0.1`) | `ZED_LISTENER_HOST` |
-| `token` | The token of the listener | `ZED_LISTENER_TOKEN` |
+| `token` | The token of the listener, or a list: `<token>` for all ports, `7683=<token>` for one port | `ZED_LISTENER_TOKEN` |
 
 Precedence: option > environment variable > settings file > default value.
 
 ```bash
 zed -c port:7700              # save the port
+zed -c port:+7683             # add a port to the list
+zed -c token:+7683=<token>    # the token of port 7683
+zed -c port:-7683             # remove a port from the list
 zed -c target:                # remove the target (use the default)
 ```
 
@@ -385,6 +429,8 @@ it; run the installer again to change it.
 | `token` | The token (optional) |
 | `tunnel_hosts` | The host of the managed tunnel (optional) |
 | `wait_close` | `true` for the experimental close detection (optional) |
+| `name` | The name of this computer in `zed --doctor` (default: the computer name) |
+| `idle_command` | A command that prints the seconds since the last user input (optional; for desktops that zed-remote-open does not know) |
 | `zed_command`, `ssh_command` | Full paths of `zed` and `ssh` (the installer finds them) |
 | `log`, `zed_db`, `browser_command`, `notify_command` | Other paths: the log, the Zed database, the browser and the notification program (optional; the defaults are correct for most users) |
 
@@ -414,10 +460,11 @@ to the forwarded port on `127.0.0.1`.
 - **Wait mode** ends at the save, not at the close of the tab, unless the
   experimental close detection is on.
 - **Server:** Linux with Bash 4 or later. macOS servers are not supported.
-- **One local computer at a time for each server user.** The tunnel and the
-  settings of `zed` use one port. To use a second local computer, give its
-  listener a different port, and select it with `zed -p <port>` (or
-  `ZED_LISTENER_PORT`) on the server.
+- **Several local computers** need a different port for each one, and the
+  same SSH host name for the server on all of them. If both are in use at the
+  same time, the file opens on the one with the most recent input. On a Linux
+  desktop other than X11 or GNOME, the idle time is unknown unless you set
+  `idle_command`.
 
 ## Versions and updates
 
@@ -513,6 +560,9 @@ The managed tunnel needs SSH key authentication. Make sure that
 - With a token, it accepts only requests with the same token (constant-time
   comparison). The settings files with the token have mode `600`; on Windows,
   they are in `%LOCALAPPDATA%`, which only your user can read.
+- The `status` request (for several local computers) tells only the seconds
+  since the last user input and the computer name, and only with the
+  correct host and token.
 - A request is limited to 64 KiB, 5 seconds and 100 paths, and the listener
   serves at most 16 connections at the same time.
 - It runs `zed` without a shell, and the client cannot add options to the
