@@ -13,6 +13,7 @@ from pathlib import Path
 from helpers import (
     TOKEN,
     ZED_SCHEMA,
+    FakeIdle,
     FakeZed,
     RunningListener,
     load_listener,
@@ -124,7 +125,8 @@ class LoadConfigTest(unittest.TestCase):
         for data in ({"hosts": []}, {"hosts": ["a b"]}, {"hosts": ["a"], "port": 0},
                      {"hosts": ["a"], "port": True}, {"hosts": ["a"], "token": "short"},
                      {"hosts": ["a"], "zed_command": "/does/not/exist"},
-                     {"hosts": ["a"], "tunnel_hosts": "a"}, {"hosts": ["a"], "wait_close": 1}):
+                     {"hosts": ["a"], "tunnel_hosts": "a"}, {"hosts": ["a"], "wait_close": 1},
+                     {"hosts": ["a"], "name": "a b"}, {"hosts": ["a"], "name": "x" * 65}):
             with self.subTest(data), self.assertRaises(zl.ConfigError):
                 self.load(data)
 
@@ -176,18 +178,28 @@ class ListenerFeaturesTest(unittest.TestCase):
             cls.browser = FakeZed(listener.dir, "browser")
             cls.notifier = FakeZed(listener.dir, "notifier")
             cls.ssh = FakeZed(listener.dir, "ssh")
+            cls.idle = FakeIdle(listener.dir)
             cls.db = listener.dir / "zed-db.sqlite"
             with closing(sqlite3.connect(cls.db)) as con, con:
                 con.executescript(ZED_SCHEMA)
             return {"browser_command": str(cls.browser.path),
                     "notify_command": str(cls.notifier.path),
                     "ssh_command": str(cls.ssh.path), "tunnel_hosts": ["testhost"],
-                    "wait_close": True, "zed_db": str(cls.db)}
+                    "wait_close": True, "zed_db": str(cls.db),
+                    "idle_command": str(cls.idle.path), "name": "desk-1"}
         cls.listener = RunningListener(hosts=("testhost",), extra=extra)
 
     @classmethod
     def tearDownClass(cls):
         cls.listener.close()
+
+    def test_status(self):
+        self.idle.set("42.7")
+        out = send(self.listener.port, request("testhost", "status"))
+        self.assertEqual(out, [f"OK {zl.__version__} idle=42 name=desk-1"])
+        self.idle.set("not a number")
+        out = send(self.listener.port, request("testhost", "status"))
+        self.assertEqual(out, [f"OK {zl.__version__} idle=unknown name=desk-1"])
 
     def test_browse(self):
         out = send(self.listener.port, request(

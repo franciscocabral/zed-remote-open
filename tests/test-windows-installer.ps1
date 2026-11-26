@@ -40,7 +40,7 @@ try {
     $out = Invoke-Installer @('-Yes', '-Port', "$port", '-Hosts', 'testhost,testhost.ts', '-Token', $token)
     Test-Condition ($out -match "The listener answers on 127\.0\.0\.1:$port") 'the listener answers'
     Test-Condition ($out -match 'Verified: ssh testhost\.ts forwards') 'ssh -G verifies the forward'
-    Test-Condition ($out -match "-y -h testhost -p $port -k $token") 'the remote command has the options'
+    Test-Condition ($out -match "-y -h testhost -p \+$port -k $token") 'the remote command has the options'
     Test-Condition (Test-Path $shortcut) 'the startup shortcut exists'
     $blocks = @(Select-String -Path $sshConfig -Pattern '^# BEGIN zed-remote-open').Count
     Test-Condition ($blocks -eq 1) 'one block in ~/.ssh/config'

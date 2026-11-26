@@ -483,6 +483,10 @@ Stop-Listener
 $portDefault = if ($current -and $current.port) { [int]$current.port } else { $DefaultPort }
 $portGiven = $PSBoundParameters.ContainsKey('Port')
 if (-not $portGiven) {
+    if ($Interactive) {
+        Write-Note 'Each local computer that opens files of the same server needs its own port'
+        Write-Note '(for example 7682 on the first computer, 7683 on the second).'
+    }
     $value = Read-Value 'Listener port' "$portDefault"
     $Port = if ($value -match '^\d{1,5}$') { [int]$value } else { 0 }
 }
@@ -688,7 +692,8 @@ if ($tunnelMode -eq 'config') {
     Write-Host '  show the warning "remote port forwarding failed". This is normal.'
 }
 
-$remoteCommand = "bash <(curl -fsSL $BaseUrl/remote/remote-linux-installer.sh) -y -h $($Hosts[0]) -p $Port"
+# "-p +PORT" adds this computer to the list on the server (several local computers).
+$remoteCommand = "bash <(curl -fsSL $BaseUrl/remote/remote-linux-installer.sh) -y -h $($Hosts[0]) -p +$Port"
 if ($tokenValue) { $remoteCommand += " -k $tokenValue" }
 Write-Host ''
 Write-Host 'Then install the zed command on the server. Run this command there:'

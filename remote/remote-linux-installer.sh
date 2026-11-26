@@ -5,7 +5,8 @@
 #        remote-linux-installer.sh -u [-y]
 #
 #   -h HOST    SSH host name that the local computer uses for this server.
-#   -p PORT    Port of the RemoteForward on this server (default 7682).
+#   -p PORT    Port of the tunnel on this server (default 7682). "+PORT" adds a port
+#              (one more local computer); with -k, the token is for that port.
 #   -t TARGET  Address of the listener (default 127.0.0.1).
 #   -k TOKEN   Token of the listener. Without -k, the current token stays.
 #   -y         Ask no questions: use the given, current or default values.
@@ -43,7 +44,8 @@ Usage: remote-linux-installer.sh [-h HOST] [-p PORT] [-t TARGET] [-k TOKEN] [-y]
        remote-linux-installer.sh -u [-y]
 
   -h HOST    SSH host name that the local computer uses for this server.
-  -p PORT    Port of the RemoteForward on this server (default 7682).
+  -p PORT    Port of the tunnel on this server (default 7682). "+PORT" adds a port
+             (one more local computer); with -k, the token is for that port.
   -t TARGET  Address of the listener (default 127.0.0.1).
   -k TOKEN   Token of the listener. Without -k, the current token stays.
   -y         Ask no questions: use the given, current or default values.
@@ -235,7 +237,7 @@ fi
 valid() {
     case $1 in
         host) [[ $2 =~ ^[A-Za-z0-9._-]+$ ]] ;;
-        port) [[ $2 =~ ^[0-9]{1,5}$ ]] && ((10#$2 >= 1 && 10#$2 <= 65535)) ;;
+        port) [[ $2 =~ ^\+?[0-9]{1,5}(,[0-9]{1,5})*$ ]] ;; # zed -c checks each port.
         target) [[ $2 =~ ^[A-Za-z0-9.-]+$ ]] ;;
         token) [[ $2 =~ ^[A-Za-z0-9_-]+$ ]] && ((${#2} >= 16 && ${#2} <= 256)) ;;
     esac
@@ -285,7 +287,8 @@ host=$(ask host "$default_host" "SSH host name of this server" \
     "The host is the SSH host name that your local computer uses for this server
 (the 'Host' line in its ~/.ssh/config). The listener must allow this name.")
 port=$(ask port "${default_port:-7682}" "Listener port" \
-    "The port is the port on this server where the SSH RemoteForward listens.")
+    "The port is the port on this server where the SSH tunnel listens. Each local
+computer has its own port: \"+PORT\" adds the port of one more local computer.")
 target=$(ask target "${default_target:-127.0.0.1}" "Listener address" \
     "The target is the address of the listener. Use 127.0.0.1 with the SSH RemoteForward.")
 
@@ -322,8 +325,14 @@ else
     warn "$BROWSE_LINK exists and is not a link to zed: it stays"
 fi
 
+# "+PORT" adds a local computer: its port goes into the list, and its token
+# is for that port only. A port without "+" replaces the list and the token.
 settings=(-c "host:$host" -c "port:$port" -c "target:$target")
-[[ -z $token ]] || settings+=(-c "token:$token")
+if [[ -n $token && $port == +* ]]; then
+    settings+=(-c "token:+${port#+}=$token")
+elif [[ -n $token ]]; then
+    settings+=(-c "token:$token")
+fi
 "$DEST" "${settings[@]}" >/dev/null
 info "Saved the settings in $CONFIG_FILE"
 

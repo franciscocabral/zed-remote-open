@@ -18,6 +18,7 @@ from helpers import (
     TOKEN,
     ZED_SCHEMA,
     ZED_SCRIPT,
+    FakeIdle,
     FakeZed,
     RunningListener,
     load_listener,
@@ -234,6 +235,108 @@ class RemoteZedTest(unittest.TestCase):
 
     def test_version(self):
         self.assertEqual(self.zed("--version").stdout.strip(), f"zed-remote-open {VERSION}")
+
+
+TOKEN_B = "test-token-bbbbbbbbbbbbbbbb"
+
+
+@unittest.skipUnless(bash_ok(), "needs Bash 4 or later")
+class SeveralComputersTest(unittest.TestCase):
+    """Two local computers (two listeners with their own port, name and token).
+    zed uses the one with the most recent user input."""
+
+    @classmethod
+    def setUpClass(cls):
+        def computer(name):
+            def extra(listener):
+                listener.idle = FakeIdle(listener.dir)
+                return {"idle_command": str(listener.idle.path), "name": name}
+            return extra
+        cls.desk = RunningListener(token=TOKEN, extra=computer("desk"))
+        cls.laptop = RunningListener(token=TOKEN_B, extra=computer("laptop"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.desk.close()
+        cls.laptop.close()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.file = self.home / "a.md"
+        self.file.write_text("x")
+        self.env = {"HOME": str(self.home), "PATH": os.environ["PATH"], "ZED_SSH_HOST": "testhost"}
+        self.zed("-c", f"port:{self.desk.port}", "-c", f"token:{TOKEN}")
+        self.zed("-c", f"port:+{self.laptop.port}", "-c", f"token:+{self.laptop.port}={TOKEN_B}")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def zed(self, *args, check=True):
+        out = subprocess.run(["bash", str(ZED_SCRIPT), *args], cwd=self.home, capture_output=True,
+                             text=True, env=self.env, timeout=30)
+        if check and out.returncode != 0:
+            self.fail(f"zed {args} failed: {out.stderr}")
+        return out
+
+    def calls(self, listener) -> int:
+        calls = listener.zed.calls
+        return len(calls.read_text().splitlines()) if calls.exists() else 0
+
+    def test_settings(self):
+        text = (self.home / ".config" / "zed-remote-open" / "settings.json").read_text()
+        self.assertIn(f'"port": "{self.desk.port},{self.laptop.port}"', text)
+        self.assertIn(f'"token": "{TOKEN},{self.laptop.port}={TOKEN_B}"', text)
+
+    def test_most_recent_input_wins(self):
+        for active, other in ((self.laptop, self.desk), (self.desk, self.laptop)):
+            with self.subTest(active=active.port):
+                active.idle.set("3")
+                other.idle.set("4000")
+                before = self.calls(active), self.calls(other)
+                out = self.zed("a.md")
+                name = "laptop" if active is self.laptop else "desk"
+                self.assertIn(f"on {name}", out.stdout)
+                active.zed.read(before[0] + 1)
+                time.sleep(0.5)
+                self.assertEqual(self.calls(other), before[1], "the other computer got the file")
+
+    def test_unknown_idle_uses_the_first_port(self):
+        self.desk.idle.set("unknown")
+        self.laptop.idle.set("unknown")
+        out = self.zed("a.md")
+        self.assertIn("on desk", out.stdout)
+
+    def test_a_computer_without_tunnel_is_skipped(self):
+        self.zed("-c", "port:+1")  # Nothing listens on port 1.
+        self.desk.idle.set("9000")
+        self.laptop.idle.set("10")
+        out = self.zed("a.md")
+        self.assertIn("on laptop", out.stdout)
+        self.zed("-c", "port:-1")
+
+    def test_option_p_uses_one_port(self):
+        self.desk.idle.set("9000")
+        self.laptop.idle.set("1")
+        before = self.calls(self.desk)
+        out = self.zed("-p", str(self.desk.port), "a.md")
+        self.assertNotIn(" on ", out.stdout)
+        self.desk.zed.read(before + 1)
+
+    def test_doctor_lists_the_computers(self):
+        self.desk.idle.set("7200")
+        self.laptop.idle.set("12")
+        out = self.zed("--doctor", check=False).stdout
+        self.assertRegex(out, rf"{self.laptop.port}\s+laptop\s+last input: 12 s.*<- selected")
+        self.assertRegex(out, rf"{self.desk.port}\s+desk\s+last input: 2 h")
+        self.assertIn("token   set (2)", out)
+        self.assertIn(f"port    {self.desk.port},{self.laptop.port}", out)
+
+    def test_list_changes(self):
+        self.zed("-c", "port:+7999", "-c", "port:-7999")
+        self.assertIn("unknown key", self.zed("-c", "ports:1", check=False).stderr)
+        bad = self.zed("-c", "port:7682,7682", check=False)
+        self.assertIn("is not a valid port", bad.stderr)
 
 
 @unittest.skipUnless(bash_ok(), "needs Bash 4 or later")

@@ -41,6 +41,13 @@ Options:
   -c KEY:VALUE   Save a value in the settings file. KEY is one of:
                  ${KEYS[*]}. An empty VALUE removes the key. You can use -c
                  more than one time. With -c and no PATH, zed opens nothing.
+                 For port and token, "+VALUE" adds to the list and "-VALUE"
+                 removes from it: -c port:+7683 -c token:+7683=<token>
+
+Several local computers: give each one its own port, and put all the ports
+in the port setting (for example 7682,7683). zed asks each listener for the
+time since the last keyboard or mouse input, and it uses the computer with
+the most recent input. -p PORT uses one port only.
   --browse URL   Open an http:// or https:// URL in the browser of the local
                  computer.
   --notify       Show a notification on the local computer.
@@ -87,16 +94,65 @@ env_value() {
     esac
 }
 
+valid_port() { [[ $1 =~ ^[0-9]{1,5}$ ]] && ((10#$1 >= 1 && 10#$1 <= 65535)); }
+valid_token() { [[ $1 =~ ^[A-Za-z0-9_-]+$ ]] && ((${#1} >= 16 && ${#1} <= 256)); }
+
+# A list of ports separated by commas: "7682" or "7682,7683" (1 to 8, no duplicates).
+valid_port_list() {
+    local p
+    local -a items=()
+    local -A seen_port=()
+    IFS=, read -r -a items <<<"$1"
+    ((${#items[@]} >= 1 && ${#items[@]} <= 8)) || return 1
+    for p in "${items[@]}"; do
+        valid_port "$p" && [[ -z ${seen_port[$p]+set} ]] || return 1
+        seen_port[$p]=1
+    done
+}
+
+# A list of tokens separated by commas. "TOKEN" is for all the ports, and
+# "PORT=TOKEN" is for one port (each local computer has its own token).
+valid_token_list() {
+    local t
+    local -a items=()
+    IFS=, read -r -a items <<<"$1"
+    ((${#items[@]} >= 1)) || return 1
+    for t in "${items[@]}"; do
+        if [[ $t == *=* ]]; then
+            valid_port "${t%%=*}" && valid_token "${t#*=}" || return 1
+        else
+            valid_token "$t" || return 1
+        fi
+    done
+}
+
 # Returns 0 if the value is correct for the key.
 valid_value() {
     local key=$1 value=$2
     case $key in
         host) [[ $value =~ ^[A-Za-z0-9._-]+$ ]] ;;
-        port) [[ $value =~ ^[0-9]{1,5}$ ]] && ((10#$value >= 1 && 10#$value <= 65535)) ;;
+        port) valid_port_list "$value" ;;
         target) [[ $value =~ ^[A-Za-z0-9.-]+$ ]] ;;
-        token) [[ $value =~ ^[A-Za-z0-9_-]+$ ]] && ((${#value} >= 16 && ${#value} <= 256)) ;;
+        token) valid_token_list "$value" ;;
         *) return 1 ;;
     esac
+}
+
+# list_change KEY CURRENT CHANGE: prints the list after "+ITEM" (add or
+# replace) or "-ITEM" (remove). For a token, "PORT=..." and "-PORT" use the port.
+list_change() {
+    local key=$1 current=$2 op=${3:0:1} item=${3:1} id x xid
+    local -a items=() out=()
+    if [[ -n $current ]]; then IFS=, read -r -a items <<<"$current"; fi
+    id=$item
+    if [[ $key == token && $item == *=* ]]; then id=${item%%=*}; fi
+    for x in "${items[@]+"${items[@]}"}"; do
+        xid=$x
+        if [[ $key == token && $x == *=* ]]; then xid=${x%%=*}; fi
+        [[ $xid == "$id" ]] || out+=("$x")
+    done
+    if [[ $op == + ]]; then out+=("$item"); fi
+    (IFS=, && echo "${out[*]-}")
 }
 
 is_key() {
@@ -128,7 +184,7 @@ write_settings() {
         echo "{"
         for key in "${KEYS[@]}"; do
             [[ -n ${saved[$key]-} ]] || continue
-            if [[ $key == port ]]; then
+            if [[ $key == port && ${saved[$key]} != *,* ]]; then
                 printf '%s  "%s": %s' "$sep" "$key" "$((10#${saved[$key]}))"
             else
                 printf '%s  "%s": "%s"' "$sep" "$key" "${saved[$key]}"
@@ -170,9 +226,11 @@ request() {
         fi
         return 0
     fi
+    local token
+    token=$(token_for "${cfg[port]}")
     {
         echo "zro 2"
-        if [[ -n ${cfg[token]} ]]; then echo "token ${cfg[token]}"; fi
+        if [[ -n $token ]]; then echo "token $token"; fi
         echo "host ${cfg[host]}"
         echo "mode $mode"
         for line in "${req_paths[@]+"${req_paths[@]}"}"; do echo "path $line"; done
@@ -183,6 +241,101 @@ request() {
         response="ERR no response from the listener at ${cfg[target]}:${cfg[port]} (the SSH tunnel works, but the listener on the local computer does not answer)"
     fi
     response=${response%$'\r'}
+}
+
+# token_for PORT: prints the token for this port ("PORT=TOKEN", else "TOKEN").
+token_for() {
+    local port=$1 t default=""
+    local -a items=()
+    if [[ -n ${cfg[token]} ]]; then IFS=, read -r -a items <<<"${cfg[token]}"; fi
+    for t in "${items[@]+"${items[@]}"}"; do
+        if [[ $t == "$port="* ]]; then
+            echo "${t#*=}"
+            return 0
+        fi
+        if [[ $t != *=* ]]; then default=$t; fi
+    done
+    echo "$default"
+}
+
+# --- Several local computers ---
+
+sel_name=""
+port_list=""
+st_report=()
+declare -A st_names=()
+
+# listener_status PORT: asks the listener for its state. Sets st_state
+# (ok, rejected or offline), st_idle (seconds or "unknown"), st_name, st_text.
+listener_status() {
+    local port=$1 token reply version
+    st_state=offline st_idle=unknown st_name="" st_text="nothing listens on this port"
+    if ! { exec 5<>"/dev/tcp/${cfg[target]}/$port"; } 2>/dev/null; then
+        return 0
+    fi
+    token=$(token_for "$port")
+    {
+        echo "zro 2"
+        if [[ -n $token ]]; then echo "token $token"; fi
+        echo "host ${cfg[host]}"
+        echo "mode status"
+        echo "end"
+    } >&5 2>/dev/null || true
+    if ! IFS= read -r -t "$RESPONSE_TIMEOUT" reply <&5; then reply=""; fi
+    exec 5<&-
+    reply=${reply%$'\r'}
+    case $reply in
+        "OK "*)
+            read -r version _ <<<"${reply#OK }"
+            st_state=ok st_text="version $version"
+            if [[ $reply =~ idle=([0-9]+|unknown) ]]; then st_idle=${BASH_REMATCH[1]}; fi
+            if [[ $reply =~ name=([A-Za-z0-9._-]+) ]]; then st_name=${BASH_REMATCH[1]}; fi
+            ;;
+        "ERR invalid mode 'status'"*) # A listener older than 1.3.0: it can open files.
+            st_state=ok st_text="old listener: no activity information" ;;
+        "ERR "*) st_state=rejected st_text=${reply#ERR } ;;
+        *) st_state=offline st_text="no response: the tunnel works, but the listener does not answer" ;;
+    esac
+}
+
+# With more than one port, selects the listener of the computer with the most
+# recent user input (the lowest idle time). Sets cfg[port] to its port.
+select_listener() {
+    local p best="" best_idle="" first_ok=""
+    local -a ports=()
+    port_list=${cfg[port]} # cfg[port] becomes the selected port.
+    IFS=, read -r -a ports <<<"${cfg[port]}"
+    ((${#ports[@]} > 1)) || return 0
+    for p in "${ports[@]}"; do
+        listener_status "$p"
+        st_report+=("$p|$st_state|$st_idle|${st_name:--}|$st_text")
+        st_names[$p]=$st_name
+        [[ $st_state == ok ]] || continue
+        if [[ -z $first_ok ]]; then first_ok=$p; fi
+        if [[ $st_idle =~ ^[0-9]+$ ]] && { [[ -z $best_idle ]] || ((st_idle < best_idle)); }; then
+            best=$p best_idle=$st_idle
+        fi
+    done
+    if [[ -z $best ]]; then best=${first_ok:-${ports[0]}}; fi
+    cfg[port]=$best
+    sel_name=${st_names[$best]-}
+    if [[ -z $sel_name ]]; then sel_name="port $best"; fi
+}
+
+# Prints " on NAME" when zed selected one of several local computers.
+on_computer() {
+    if [[ -n $sel_name ]]; then echo " on $sel_name"; fi
+}
+
+# Prints an idle time for people: 12 s, 5 min, 3 h, 2 d.
+human_time() {
+    local t=$1
+    if ! [[ $t =~ ^[0-9]+$ ]]; then echo "unknown"
+    elif ((t < 120)); then echo "$t s"
+    elif ((t < 7200)); then echo "$((t / 60)) min"
+    elif ((t < 172800)); then echo "$((t / 3600)) h"
+    else echo "$((t / 86400)) d"
+    fi
 }
 
 version_hint() {
@@ -298,7 +451,7 @@ run_open() {
         position=""
         if ((line > 0)); then position=":$line"; fi
         if ((col > 0)); then position="$position:$col"; fi
-        echo "Opening Zed at ${arg#* * }$position"
+        echo "Opening Zed at ${arg#* * }$position$(on_computer)"
     done
 
     if [[ $mode == wait ]]; then
@@ -391,7 +544,7 @@ run_browse() {
     request browse
     exec 3<&- 2>/dev/null || true
     case $response in
-        "OK "*) echo "Opening the URL in the browser of the local computer: $url" ;;
+        "OK "*) echo "Opening the URL in the browser of the local computer$(on_computer): $url" ;;
         "ERR "*) die "${response#ERR }" ;;
         *) die "unexpected response from the listener: $response" ;;
     esac
@@ -486,8 +639,13 @@ run_doctor() {
     echo "Settings:"
     for key in "${KEYS[@]}"; do
         value=${cfg[$key]}
+        if [[ $key == port && -n $port_list ]]; then value=$port_list; fi
         if [[ $key == token ]]; then
-            if [[ -n $value ]]; then value="set"; else value="not set"; fi
+            if [[ -n $value ]]; then
+                value="set ($(tr ',' '\n' <<<"$value" | grep -c .))"
+            else
+                value="not set"
+            fi
         fi
         printf '  %-7s %-24s (%s)\n' "$key" "$value" "${src[$key]}"
     done
@@ -499,6 +657,22 @@ run_doctor() {
         echo "  [ok]   'zed' in PATH is this script"
     else
         echo "  [warn] 'zed' in PATH is '${found:-nothing}', not $self"
+    fi
+
+    if ((${#st_report[@]} > 0)); then
+        local entry port state idle name text mark
+        echo "  Local computers (zed uses the one with the most recent user input):"
+        for entry in "${st_report[@]}"; do
+            IFS='|' read -r port state idle name text <<<"$entry"
+            mark=""
+            if [[ $port == "${cfg[port]}" ]]; then mark="  <- selected"; fi
+            if [[ $state == ok ]]; then
+                printf '         %-5s  %-16s last input: %-9s %s%s\n' "$port" "$name" \
+                    "$(human_time "$idle")" "$text" "$mark"
+            else
+                printf '         %-5s  %-16s %s: %s%s\n' "$port" "$name" "$state" "$text" "$mark"
+            fi
+        done
     fi
 
     request ping
@@ -623,6 +797,9 @@ if ((${#changes[@]} > 0)); then
         key=${change%%:*}
         value=${change#*:}
         is_key "$key" || die "unknown key '$key' (use: ${KEYS[*]})"
+        if [[ ($key == port || $key == token) && $value == [+-]* ]]; then
+            value=$(list_change "$key" "${saved[$key]-}" "$value")
+        fi
         if [[ -z $value ]]; then
             unset "saved[$key]"
             echo "zed: removed '$key' from $CONFIG_FILE"
@@ -641,8 +818,8 @@ case $action in
     update) run_update ;;
     uninstall) run_uninstall ;;
     completion) run_completion "$@" ;;
-    doctor) resolve_settings && run_doctor ;;
-    browse) resolve_settings && run_browse "$@" ;;
-    notify) resolve_settings && run_notify "$@" ;;
-    open) resolve_settings && run_open "$mode" "$@" ;;
+    doctor) resolve_settings && select_listener && run_doctor ;;
+    browse) resolve_settings && select_listener && run_browse "$@" ;;
+    notify) resolve_settings && select_listener && run_notify "$@" ;;
+    open) resolve_settings && select_listener && run_open "$mode" "$@" ;;
 esac
