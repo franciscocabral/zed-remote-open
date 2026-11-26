@@ -64,7 +64,7 @@ step "Local installer: new installation"
 expect "$WORK/out" "The listener answers on 127.0.0.1:$PORT"
 expect "$WORK/out" "Verified: ssh testhost forwards the server port $PORT"
 expect "$WORK/out" "Verified: ssh testhost.ts forwards the server port $PORT"
-expect "$WORK/out" "remote-linux-installer.sh) -y -h testhost -p $PORT -k $TOKEN"
+expect "$WORK/out" "remote-linux-installer.sh) -y -h testhost -p +$PORT -k $TOKEN"
 grep -c '^# BEGIN zed-remote-open' "$HOME/.ssh/config" | grep -qx 1 || fail "one block expected"
 
 step "Local installer: managed SSH tunnel"
@@ -89,8 +89,17 @@ grep -c '^# BEGIN zed-remote-open' "$HOME/.ssh/config" | grep -qx 1 || fail "one
 
 if ((BASH_VERSINFO[0] >= 4)) && realpath -m / >/dev/null 2>&1; then
     step "Remote installer with the options from the local installer"
-    bash "$ROOT/remote/remote-linux-installer.sh" -y -h testhost -p "$PORT" -k "$TOKEN" 2>&1 | tee "$WORK/out"
+    bash "$ROOT/remote/remote-linux-installer.sh" -y -h testhost -p "+$PORT" -k "$TOKEN" 2>&1 | tee "$WORK/out"
     expect "$WORK/out" "accepts host 'testhost'"
+    grep -q "\"token\": \"$PORT=$TOKEN\"" "$HOME/.config/zed-remote-open/settings.json" ||
+        fail "the token must be for port $PORT"
+
+    step "Remote installer: a second local computer adds its port"
+    bash "$ROOT/remote/remote-linux-installer.sh" -y -h testhost -p +65001 -k "$TOKEN-second" 2>&1 | tee "$WORK/out"
+    grep -q "\"port\": \"$PORT,65001\"" "$HOME/.config/zed-remote-open/settings.json" ||
+        fail "the port list must have both ports"
+    expect "$WORK/out" "65001  -                offline: nothing listens on this port"
+    "$HOME/.local/bin/zed" -c port:-65001 -c token:-65001 >/dev/null
     expect "$WORK/out" "Done."
 
     [[ -L $HOME/.local/bin/zed-browse ]] || fail "no zed-browse link"

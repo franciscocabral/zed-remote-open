@@ -91,6 +91,24 @@ class FakeZed:
         raise AssertionError(f"{self.path.name} was not called {count} time(s)")
 
 
+class FakeIdle:
+    """An "idle_command" that prints the seconds in a file (the test changes them)."""
+
+    def __init__(self, directory: Path, seconds: str = "0"):
+        self.file = directory / "idle-seconds.txt"
+        self.set(seconds)
+        if sys.platform == "win32":
+            self.path = directory / "idle.cmd"
+            self.path.write_text(f'@type "{self.file}"\r\n')
+        else:
+            self.path = directory / "idle"
+            self.path.write_text(f'#!/bin/sh\ncat "{self.file}"\n')
+            self.path.chmod(0o755)
+
+    def set(self, seconds: str) -> None:
+        self.file.write_text(f"{seconds}\n")
+
+
 class RunningListener:
     """Starts the listener in a subprocess with a temporary configuration."""
 
